@@ -39,12 +39,11 @@ les arguments `-File <session.ps1> -Game <NOM>`. Trois conséquences à garder :
   l'utilisateur n'est jamais supprimé. Ne pas remplacer ce test par une
   correspondance sur le nom du fichier.
 - **`ShortcutFolder`** choisit l'emplacement, le Bureau par défaut. Le ménage
-  balaie trois dossiers : la cible, le Bureau, et `state/shortcut-folder.txt`
-  qui mémorise le dernier emplacement utilisé. Sans cette mémoire, passer d'un
-  dossier personnalisé à un autre abandonnerait les anciens raccourcis. Ce
-  fichier se lit avec `Read-TextFile` et s'écrit avec
-  `[System.IO.File]::WriteAllText` : `Set-Content -Encoding UTF8` ajoute un BOM
-  que `Trim()` ne retire pas, et le chemin relu ne désigne alors plus rien.
+  balaie la cible et le Bureau — ce dernier parce que c'est de là qu'on vient
+  quand l'option est renseignée pour la première fois. Passer d'un dossier
+  personnalisé à un autre laisse les anciens sur place : c'est assumé, mémoriser
+  l'emplacement précédent dans `state/` a été essayé et retiré, la complexité ne
+  valait pas ce cas de figure.
 - **Les chemins sont absolus** : déplacer le dossier casse les raccourcis, il
   faut relancer `setup.bat`. C'est documenté dans le README.
 
@@ -80,12 +79,19 @@ les processus plus privilégiés) et l'enregistre. `restore-all` relance
 exactement ça. C'est ce qui rend le même `config.ini` utilisable sur n'importe
 quelle machine — ne jamais réintroduire de chemin en dur.
 
-**État dans `state/`** — le sous-dossier contient `last-session.json` (ce qui a
-été fermé) et `detected-games.json` (cache de détection). Le dossier du projet
-reste ainsi autonome et déplaçable d'un bloc. Le dossier est versionné via un
-`.gitkeep`, son contenu jamais : `.gitignore` porte `state/*` puis
-`!state/.gitkeep`, dans cet ordre — ignorer `state/` en entier empêcherait git
-de voir le `.gitkeep`.
+**État dans `state.json`** — un seul fichier à la racine, deux clefs de durées
+de vie différentes : `games` (où se trouve chaque jeu) et `session` (ce qui a
+été fermé avant la partie). Le dossier du projet reste autonome et déplaçable
+d'un bloc, sans rien écrire ailleurs sur la machine.
+
+`Set-State` fait un lire-modifier-réécrire : écrire une clef ne doit jamais
+effacer l'autre. `Get-State` renvoie un dictionnaire vide si le fichier manque
+ou est abîmé — on redétecte, ce qui est toujours préférable à interrompre une
+partie.
+
+Une version antérieure utilisait un dossier `state/` avec un fichier par clef,
+plus un `.gitkeep` et la subtilité `state/*` puis `!state/.gitkeep` dans cet
+ordre. Un fichier unique fait le même travail avec une ligne de `.gitignore`.
 
 Rien de volatil ne doit atterrir ailleurs que là, et rien de volatil ne doit
 être versionné.

@@ -3,7 +3,6 @@
 # config.exemple.ini, dont config.ini est cree au premier lancement.
 config.ini
 
-# Etat entre deux parties : ce qui a ete ferme, ou se trouve chaque jeu.
-# Le dossier est versionne (via .gitkeep), son contenu ne l'est jamais.
-state/*
-!state/.gitkeep
+# Ou se trouvent les jeux, et ce qui a ete ferme avant la derniere partie.
+# Se reconstruit tout seul : rien la-dedans ne merite d'etre versionne.
+state.json

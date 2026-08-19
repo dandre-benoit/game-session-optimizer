@@ -154,18 +154,7 @@ Write-Host 'Creation des raccourcis dans :'
 Write-Host "    $target" -ForegroundColor Cyan
 Write-Host ''
 
-# Le dossier ou l'on a depose les raccourcis la derniere fois. Sans cette
-# memoire, changer ShortcutFolder d'un dossier personnalise a un autre
-# laisserait les anciens raccourcis orphelins la ou ils sont.
-$lastFolderFile = Join-Path $script:StateDir 'shortcut-folder.txt'
-$lastFolder = ''
-if (Test-Path -LiteralPath $lastFolderFile) {
-    # Read-TextFile vient du moteur et sait retirer le BOM : sans lui, le chemin
-    # relu commencerait par un caractere invisible et ne designerait plus rien.
-    try { $lastFolder = (Read-TextFile $lastFolderFile).Trim() } catch { }
-}
-
-$old = Remove-OwnShortcuts @($target, $desktop, $lastFolder)
+$old = Remove-OwnShortcuts @($target, $desktop)
 if ($old -gt 0) { Write-Host "    ($old ancien(s) raccourci(s) remplace(s))" -ForegroundColor DarkGray }
 
 $games   = @(Get-IniList $ini 'Games')
@@ -210,10 +199,6 @@ $null = New-Shortcut -Name 'Tout rouvrir' `
                      -IconPath "$env:WINDIR\System32\shell32.dll,238" `
                      -Description 'Remet en place ce qui a ete ferme avant la partie'
 Write-Host 'ok' -ForegroundColor Green
-
-$null = New-Item -ItemType Directory -Path $script:StateDir -Force
-# WriteAllText n'ajoute pas de BOM, contrairement a Set-Content -Encoding UTF8
-[System.IO.File]::WriteAllText($lastFolderFile, $target)
 
 Write-Host ''
 Write-Host "Termine. $created raccourci(s) de jeu, plus Tout rouvrir." -ForegroundColor Green

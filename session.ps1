@@ -34,12 +34,10 @@ if (-not $Config) { $Config = Join-Path $script:Root 'config.ini' }
 $script:ConfigTemplate = Join-Path (Split-Path -Parent $Config) `
                                    ([System.IO.Path]::GetFileNameWithoutExtension($Config) + '.exemple.ini')
 
-# Etat entre deux parties, dans un sous-dossier du projet plutot que sous
-# %LOCALAPPDATA% : le dossier reste autonome et deplacable d'un bloc. Son
-# contenu est ignore par git, seul le dossier lui-meme est versionne.
-$script:StateDir      = Join-Path $script:Root 'state'
-$script:SessionFile   = Join-Path $script:StateDir 'last-session.json'
-$script:GameCacheFile = Join-Path $script:StateDir 'detected-games.json'
+# Tout l'etat entre deux parties dans un seul fichier, a cote des scripts
+# plutot que sous %LOCALAPPDATA% : le dossier reste autonome et deplacable d'un
+# bloc. Un seul fichier, donc une seule ligne de .gitignore.
+$script:StateFile = Join-Path $script:Root 'state.json'
 
 # Fichier en ASCII pur, accents compris dans les commentaires : PowerShell 5.1
 # lit un .ps1 sans BOM comme de l'ANSI, et la console heritee du .bat tourne en
@@ -178,6 +176,38 @@ function Get-IniInt {
     $n = 0
     if ([int]::TryParse($v, [ref]$n) -and $n -ge 0) { return $n }
     return $Default
+}
+
+# ==============================================================================
+#  Etat (state.json)
+# ==============================================================================
+#
+#  Deux clefs, de durees de vie differentes :
+#    games    ou se trouve chaque jeu, pour ne pas refouiller les disques
+#    session  ce qui a ete ferme avant la partie, pour pouvoir le relancer
+#
+#  Un fichier absent ou abime n'est jamais une erreur : on repart d'un etat
+#  vide, quitte a redetecter. Rien la-dedans ne merite d'interrompre une partie.
+
+function Get-State {
+    if (-not (Test-Path -LiteralPath $script:StateFile)) { return @{} }
+    try {
+        $state = @{}
+        ((Read-TextFile $script:StateFile) | ConvertFrom-Json).PSObject.Properties |
+            ForEach-Object { $state[$_.Name] = $_.Value }
+        return $state
+    } catch {
+        return @{}
+    }
+}
+
+# Lire-modifier-reecrire : ecrire une clef ne doit pas effacer l'autre.
+function Set-State {
+    param([string]$Key, $Value)
+
+    $state = Get-State
+    $state[$Key] = $Value
+    ($state | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:StateFile -Encoding UTF8
 }
 
 # ==============================================================================
@@ -431,12 +461,10 @@ function Resolve-GamePath {
         return $null
     }
 
+    $state = Get-State
     $cache = @{}
-    if (Test-Path -LiteralPath $script:GameCacheFile) {
-        try {
-            (Get-Content -LiteralPath $script:GameCacheFile -Raw | ConvertFrom-Json).PSObject.Properties |
-                ForEach-Object { $cache[$_.Name] = $_.Value }
-        } catch { }
+    if ($state['games']) {
+        $state['games'].PSObject.Properties | ForEach-Object { $cache[$_.Name] = $_.Value }
     }
     if ($cache[$Name] -and (Test-Path -LiteralPath $cache[$Name])) { return $cache[$Name] }
 
@@ -452,8 +480,7 @@ function Resolve-GamePath {
     }
 
     $cache[$Name] = $exe
-    $null = New-Item -ItemType Directory -Path $script:StateDir -Force
-    $cache | ConvertTo-Json | Set-Content -LiteralPath $script:GameCacheFile -Encoding UTF8
+    Set-State 'games' $cache
     return $exe
 }
 
@@ -464,12 +491,11 @@ function Resolve-GamePath {
 function Save-SessionState {
     param($Apps, $Services)
 
-    $null = New-Item -ItemType Directory -Path $script:StateDir -Force
-    [pscustomobject]@{
+    Set-State 'session' ([pscustomobject]@{
         Date     = (Get-Date).ToString('s')
         Apps     = @($Apps)
         Services = @($Services)
-    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $script:SessionFile -Encoding UTF8
+    })
 }
 
 # ==============================================================================
@@ -479,12 +505,12 @@ function Save-SessionState {
 function Invoke-Restore {
     param($Ini)
 
-    if (-not (Test-Path -LiteralPath $script:SessionFile)) {
+    $session = (Get-State)['session']
+    if (-not $session) {
         Write-Host ''
         Write-Host 'Rien a restaurer : aucun lancement de jeu enregistre.' -ForegroundColor Yellow
         return 0
     }
-    $session = Get-Content -LiteralPath $script:SessionFile -Raw | ConvertFrom-Json
 
     Write-Host ''
     Write-Host 'Redemarrage des services...'

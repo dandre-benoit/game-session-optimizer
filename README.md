@@ -6,7 +6,48 @@ Cet outil ferme ce qui tourne en arrière-plan (navigateurs, utilitaires,
 synchronisation, indexation Windows…), vérifie que la machine est en état, puis
 lance le jeu. Quand vous quittez le jeu, il remet tout comme avant.
 
-Rien à installer : tout repose sur ce qui est déjà présent dans Windows 10 et 11.
+L'outil lui-même n'a besoin de rien : il repose sur ce qui est déjà présent dans
+Windows 10 et 11.
+
+---
+
+## Prérequis
+
+**Windows 10 ou 11.** C'est tout côté machine — aucun logiciel à installer pour
+faire fonctionner l'outil.
+
+**Git**, uniquement pour récupérer le dossier et recevoir les mises à jour.
+Pas besoin de savoir s'en servir : deux copier-coller suffisent, et vous n'y
+retoucherez plus.
+
+1. Téléchargez-le sur **[git-scm.com/download/win](https://git-scm.com/download/win)**
+   et installez-le en laissant toutes les options par défaut (cliquez
+   « Next » jusqu'au bout).
+
+2. Choisissez où mettre l'outil — vos Documents, par exemple. Ouvrez ce dossier
+   dans l'Explorateur, faites un clic droit dans le vide, puis **« Ouvrir le
+   terminal »** ou **« Git Bash Here »**. Collez ceci et appuyez sur Entrée :
+
+   ```
+   git clone https://github.com/<compte>/game-session-optimizer.git
+   ```
+
+   Un dossier `game-session-optimizer` apparaît. Vous pouvez fermer la fenêtre
+   noire : le reste se fait à la souris.
+
+3. Plus tard, pour récupérer les améliorations, rouvrez le terminal **dans le
+   dossier** `game-session-optimizer` et collez :
+
+   ```
+   git pull
+   ```
+
+   Votre `config.ini` n'est jamais touché par une mise à jour.
+
+> Si vous préférez éviter git : sur la page du projet, bouton vert **Code** puis
+> **Download ZIP**, et décompressez où vous voulez. L'outil fonctionne
+> pareil — simplement, `git pull` ne sera pas disponible et il faudra
+> retélécharger le ZIP à chaque mise à jour.
 
 ---
 
@@ -38,7 +79,7 @@ faut indiquer son chemin dans `config.ini` puis relancer.
 
 ## Utilisation
 
-> Double-cliquez sur **Lancer BF6**, sur votre Bureau
+> Double-cliquez sur **Lancer Battlefield 6**, sur votre Bureau
 
 C'est tout. Le PC est préparé, le jeu se lance, et à la fin de la partie tout se
 rouvre automatiquement.
@@ -190,11 +231,12 @@ Sa plateforme a probablement été fermée juste avant le lancement. Ajoutez
 | `session.ps1` | le moteur — aucune raison de l'ouvrir |
 | `setup.ps1` | ce que `setup.bat` exécute |
 | `preflight.ps1` | les vérifications matérielles |
-| `state\` | ce que l'outil retient d'une partie à l'autre |
+| `state.json` | ce que l'outil retient d'une partie à l'autre |
 
 Ces fichiers doivent rester ensemble dans le même dossier, où que vous le
-placiez. Le sous-dossier `state` contient ce qui a été fermé et l'emplacement
-des jeux trouvés ; il se remplit tout seul et n'a pas à être touché.
+placiez. `state.json` contient ce qui a été fermé et l'emplacement des jeux
+trouvés ; il se crée tout seul et n'a pas à être touché — le supprimer ne casse
+rien, il se reconstruira.
 
 Rien n'est écrit ailleurs sur votre PC : déplacer ou supprimer le dossier suffit
 à tout emporter, ou à tout effacer.
