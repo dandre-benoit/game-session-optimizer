@@ -13,10 +13,9 @@ inconnue sans rien installer.
 | `restore-all.bat` | idem avec `-Restore` — filet manuel, la restauration étant automatique par défaut |
 | `session.ps1` | le moteur : il porte la session de jeu entière, de la préparation à la remise en état |
 | `preflight.ps1` | vérifications matérielles, chargées par le moteur via `. preflight.ps1 -AsModule` puis `Invoke-Preflight -Checks` |
-| `config.ini` | configuration de base, versionnée |
-| `config.local.ini` | surcharge propre à la machine, **jamais versionnée** |
-| `config.local.exemple.ini` | modèle à copier |
-| `readme.txt` | documentation utilisateur (destinée à des amis non techniciens) |
+| `config.ini` | la configuration lue par le moteur, **jamais versionnée** |
+| `config.exemple.ini` | le modèle livré, dont `config.ini` est créé au premier lancement |
+| `README.md` | documentation utilisateur (destinée à des amis non techniciens) |
 
 Cible : **PowerShell 5.1**, présent d'origine sur Windows 10/11. Aucune
 dépendance externe, aucune installation. Les `.bat` invoquent le moteur avec
@@ -25,7 +24,8 @@ dépendance externe, aucune installation. Les `.bat` invoquent le moteur avec
 ## Conventions
 
 **Nommage des fichiers** — minuscules, tirets, pas d'espaces (`session.ps1`,
-`play-bf6.bat`, `config.local.ini`).
+`play-bf6.bat`, `config.exemple.ini`). Seules exceptions, conventionnelles :
+`README.md` et `CLAUDE.md`.
 
 **Langue** — tous les identifiants en anglais : fonctions, paramètres,
 variables, mais aussi les sections et clés de `config.ini` (`[CloseGracefully]`,
@@ -35,9 +35,9 @@ la documentation sont en français.
 **Encodage** — les `.ps1` sont en **ASCII pur**, y compris dans les
 commentaires. Deux raisons cumulées : PowerShell 5.1 lit un `.ps1` sans BOM
 comme de l'ANSI, et la console héritée du `.bat` tourne en codepage OEM. Les
-accents y sortiraient cassés. Les `.ini` et le `readme.txt`, eux, sont en
-UTF-8 avec accents — ils sont lus par un humain dans le Bloc-notes, jamais
-affichés dans la console.
+accents y sortiraient cassés. Les `.ini` et les `.md`, eux, sont en UTF-8 avec
+accents — ils sont lus par un humain, dans le Bloc-notes ou sur la page du
+dépôt, jamais affichés dans la console.
 
 **Sortie console** — sans accents, pour la même raison.
 
@@ -61,6 +61,21 @@ Rien de volatil ne doit atterrir ailleurs que là, et rien de volatil ne doit
 
 **La question avant la casse** — si une vérification échoue, on demande avant
 d'avoir fermé quoi que ce soit. Annuler ne doit jamais rien coûter.
+
+**Le launcher du jeu se déclare, il ne se devine pas.** `[Game.<nom>]
+Launcher = Battle.net.exe` désigne la seule plateforme épargnée par les
+fermetures. Deux approches ont été essayées puis rejetées : une liste
+d'exclusions par jeu (`KeepRunning`, une double négation pour dire un fait
+simple), puis la déduction depuis le chemin d'installation. Cette dernière ne
+marche que par accident — `steamapps` et `Epic Games` nomment la plateforme,
+mais Battle.net installe dans un dossier au nom du jeu, et un `Call of Duty`
+acheté sur Steam serait attribué à Battle.net. Le chemin nomme le jeu, pas la
+plateforme : il n'y a rien à en déduire. Une ligne explicite par jeu coûte
+moins cher qu'un lancement qui échoue chez un ami.
+
+Corollaire : `steam.exe` est une entrée de `[CloseGracefully]` comme les
+autres, et non plus une option `StopSteam`. Le seul cas particulier restant est
+`Stop-Steam`, qui utilise le `-shutdown` officiel au lieu d'un `WM_CLOSE`.
 
 **Le cycle complet dans un seul processus** — avec `AutoRestore` (défaut), la
 console reste ouverte pendant la partie, `Wait-GameExit` attend la fermeture du
@@ -87,22 +102,24 @@ défaut compte comme un échec.
 installée, un service inexistant : on passe en silence. La config livrée est
 volontairement généreuse.
 
-## Fusion config.ini + config.local.ini
+## Configuration
 
-`Merge-Ini` applique le local par-dessus la base, ligne par ligne, sans savoir
-si la section est une liste ou un jeu de clés :
+`config.ini` appartient à l'utilisateur et **n'est pas versionné**. Le dépôt
+livre `config.exemple.ini` ; au premier lancement, le moteur copie l'un sur
+l'autre si `config.ini` est absent. Sans cela, un `git clone` suivi d'un
+double-clic échouerait faute de configuration.
 
-- `StartTimeout = 60` → remplace la clé existante
-- `Discord.exe` → ajoute l'entrée
-- `-Spotify.exe` → retire l'entrée de la base
+Un mécanisme de fusion `config.ini` + `config.local.ini` a existé puis été
+retiré : deux fichiers à tenir pour un outil que l'utilisateur édite de toute
+façon à la main, ça ne payait pas sa complexité. Ne pas le réintroduire sans
+raison nouvelle.
 
-L'identité d'une ligne est donnée par `Get-IniKey` : la partie à gauche du `=`
-s'il y en a un, la ligne entière sinon. C'est ce qui permet de traiter listes
-et réglages avec le même code. Ajouter une ligne ne doit jamais obliger à
-recopier une section entière.
-
-Le parseur est insensible à la casse et tolère `oui/yes/1/on` en plus de
-`true/false`, mais tout ce qui est livré et documenté utilise `true/false`.
+Le parseur garde les lignes brutes par section, ce qui permet de traiter avec
+le même code une liste (`chrome.exe`) et un réglage (`StartTimeout = 60`) :
+`Get-IniKey` donne l'identité d'une ligne — la partie à gauche du `=` s'il y en
+a un, la ligne entière sinon. Il est insensible à la casse et tolère
+`oui/yes/1/on` en plus de `true/false`, mais tout ce qui est livré et documenté
+utilise `true/false`.
 
 ## Pièges connus
 

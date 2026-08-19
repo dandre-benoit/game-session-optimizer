@@ -24,11 +24,10 @@ $ErrorActionPreference = 'Stop'
 $script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $Config) { $Config = Join-Path $script:Root 'config.ini' }
 
-# Surcharge personnelle, a cote et facultative : config.ini reste le fichier
-# livre, config.local.ini contient ce qui est propre a la machine. Il n'est
-# jamais versionne, une mise a jour du depot ne peut donc pas l'ecraser.
-$script:LocalConfig = Join-Path (Split-Path -Parent $Config) `
-                                ([System.IO.Path]::GetFileNameWithoutExtension($Config) + '.local.ini')
+# config.ini est le fichier de l'utilisateur et n'est pas versionne : au premier
+# lancement il n'existe pas, on le cree a partir du modele livre.
+$script:ConfigTemplate = Join-Path (Split-Path -Parent $Config) `
+                                   ([System.IO.Path]::GetFileNameWithoutExtension($Config) + '.exemple.ini')
 
 # Etat entre deux parties, dans un sous-dossier du projet plutot que sous
 # %LOCALAPPDATA% : le dossier reste autonome et deplacable d'un bloc. Son
@@ -123,46 +122,6 @@ function Get-IniKey {
     return $Line.Trim()
 }
 
-# Fusion de config.local.ini par-dessus config.ini :
-#   - une cle deja presente est remplacee    (StartTimeout = 60)
-#   - une entree absente est ajoutee         (Discord.exe)
-#   - une entree prefixee de "-" est retiree (-Spotify.exe)
-# Ajouter une ligne ne demande donc jamais de recopier la section entiere.
-function Merge-Ini {
-    param($Base, $Overlay)
-
-    foreach ($section in $Overlay.Keys) {
-        $target = $null
-        foreach ($key in $Base.Keys) { if ($key -eq $section) { $target = $Base[$key] } }
-        if ($null -eq $target) {
-            $target = New-Object System.Collections.ArrayList
-            $Base[$section] = $target
-        }
-
-        foreach ($line in $Overlay[$section]) {
-            if ($line.StartsWith('-')) {
-                $item = Get-IniKey $line.Substring(1)
-                for ($i = $target.Count - 1; $i -ge 0; $i--) {
-                    if ((Get-IniKey $target[$i]) -eq $item) { $target.RemoveAt($i) }
-                }
-                continue
-            }
-
-            $item = Get-IniKey $line
-            $replaced = $false
-            for ($i = 0; $i -lt $target.Count; $i++) {
-                if ((Get-IniKey $target[$i]) -eq $item) {
-                    $target[$i] = $line
-                    $replaced = $true
-                    break
-                }
-            }
-            if (-not $replaced) { $null = $target.Add($line) }
-        }
-    }
-    return $Base
-}
-
 function Get-IniSection {
     param($Ini, [string]$Name)
     foreach ($key in $Ini.Keys) {
@@ -224,6 +183,19 @@ function Get-TargetProcess {
     param([string]$Name)
     $base = [System.IO.Path]::GetFileNameWithoutExtension($Name)
     return @(Get-Process -Name $base -ErrorAction SilentlyContinue)
+}
+
+# Steam est le seul launcher a offrir un arret officiel en ligne de commande.
+# Les autres se ferment comme une application ordinaire.
+function Stop-Steam {
+    $steam = Get-SteamPath
+    if (-not $steam) { return $null }
+
+    Write-Host '    - steam.exe ' -NoNewline
+    Start-Process -FilePath $steam -ArgumentList '-shutdown'
+    $null = Wait-ProcessExit 'steam.exe' 15
+    Write-Host ' ok' -ForegroundColor Green
+    return $steam
 }
 
 # Le chemin sert a la restauration : c'est lui qui evite d'avoir a saisir les
@@ -571,6 +543,11 @@ function Invoke-Launch {
     $closeTimeout = Get-IniInt $Ini 'Options' 'CloseTimeout' 8
     $startTimeout = Get-IniInt $Ini 'Options' 'StartTimeout' 30
 
+    # Le launcher dont le jeu a besoin pour demarrer. Il est le seul a echapper
+    # aux fermetures : le fermer serait le meilleur moyen d'empecher le
+    # lancement. Declare a la main, faute d'indice fiable dans le chemin du jeu.
+    $launcher = Get-IniValue $Ini "Game.$Name" 'Launcher'
+
     # ---- 1. Verifications ---------------------------------------------------
     Write-Host ''
     Write-Host '[1/6] Verifications...'
@@ -632,6 +609,16 @@ function Invoke-Launch {
     Write-Host ''
     Write-Host '[3/6] Fermeture propre des applications...'
     foreach ($app in (Get-IniList $Ini 'CloseGracefully')) {
+        if ($launcher -and $app -eq $launcher) {
+            Write-Line $app "conserve (launcher de $Name)" 'DarkGray'
+            continue
+        }
+        if ($app -eq 'steam.exe') {
+            if ((Get-TargetProcess 'steam.exe').Count -eq 0) { continue }
+            $path = Stop-Steam
+            if ($path) { $closedApps += [pscustomobject]@{ Process = $app; Path = $path } }
+            continue
+        }
         $path = Stop-AppGracefully $app $closeTimeout
         if ($path) { $closedApps += [pscustomobject]@{ Process = $app; Path = $path } }
     }
@@ -640,6 +627,10 @@ function Invoke-Launch {
     Write-Host ''
     Write-Host '[4/6] Fermeture des utilitaires et serveurs...'
     foreach ($app in (Get-IniList $Ini 'CloseForced')) {
+        if ($launcher -and $app -eq $launcher) {
+            Write-Line $app "conserve (launcher de $Name)" 'DarkGray'
+            continue
+        }
         $path = Stop-AppForced $app
         if ($path) { $closedApps += [pscustomobject]@{ Process = $app; Path = $path } }
     }
@@ -655,18 +646,6 @@ function Invoke-Launch {
             $null = Stop-AppForced $p -Quiet
         }
         Write-Line 'Xbox Game Bar' 'arretee' 'Green'
-    }
-
-    # Steam : -shutdown est son arret officiel, puis on attend la sortie reelle
-    if ((Get-IniBool $Ini 'Options' 'StopSteam' $true) -and (Get-TargetProcess 'steam.exe').Count -gt 0) {
-        $steam = Get-SteamPath
-        if ($steam) {
-            Write-Host '    - Steam ' -NoNewline
-            Start-Process -FilePath $steam -ArgumentList '-shutdown'
-            $null = Wait-ProcessExit 'steam.exe' 15
-            Write-Host ' ok' -ForegroundColor Green
-            $closedApps += [pscustomobject]@{ Process = 'steam.exe'; Path = $steam }
-        }
     }
 
     Save-SessionState $closedApps $stoppedServices
@@ -717,18 +696,21 @@ function Invoke-Launch {
 
 $exitCode = 2
 try {
+    # Premier lancement : config.ini n'est pas livre (il appartient a
+    # l'utilisateur et n'est pas versionne), on le cree depuis le modele.
     if (-not (Test-Path -LiteralPath $Config)) {
-        Write-Failure 'config.ini introuvable :'
-        Write-Hint $Config
-        Wait-KeyPress
-        exit 2
+        if (Test-Path -LiteralPath $script:ConfigTemplate) {
+            Copy-Item -LiteralPath $script:ConfigTemplate -Destination $Config
+            Write-Host ''
+            Write-Host "    ($(Split-Path -Leaf $Config) cree a partir de $(Split-Path -Leaf $script:ConfigTemplate))" -ForegroundColor DarkGray
+        } else {
+            Write-Failure 'config.ini introuvable, et aucun modele pour le creer :'
+            Write-Hint $Config
+            Wait-KeyPress
+            exit 2
+        }
     }
     $ini = Read-IniFile $Config
-    if (Test-Path -LiteralPath $script:LocalConfig) {
-        $ini = Merge-Ini $ini (Read-IniFile $script:LocalConfig)
-        Write-Host ''
-        Write-Host "    (personnalisation : $(Split-Path -Leaf $script:LocalConfig))" -ForegroundColor DarkGray
-    }
 
     if ($Restore) {
         $exitCode = Invoke-Restore $ini
