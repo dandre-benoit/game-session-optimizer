@@ -3,11 +3,15 @@
   session.ps1 - moteur generique de lancement de jeu
 
   Ce fichier n'a pas vocation a etre edite : toute la configuration se fait
-  dans config.ini, a cote. Il est appele par les petits .bat "play-<jeu>.bat".
+  dans config.ini, a cote. Il est appele par les raccourcis du Bureau que
+  setup.ps1 a crees.
 
     -Game <nom>   nom d'une entree de la section [Games] de config.ini
     -Restore      relance ce qui a ete ferme au dernier passage
     -Config       chemin d'un config.ini alternatif
+    -AsModule     ne fait rien : charge seulement les fonctions, pour que
+                  setup.ps1 (et les tests) reutilisent la lecture de config et
+                  la detection des jeux sans les redefinir
 
   Codes de sortie : 0 = ok, 1 = annule par l'utilisateur, 2 = erreur.
  ==============================================================================
@@ -16,7 +20,8 @@
 param(
     [string]$Game,
     [switch]$Restore,
-    [string]$Config
+    [string]$Config,
+    [switch]$AsModule
 )
 
 $ErrorActionPreference = 'Stop'
@@ -408,14 +413,21 @@ function Find-Game {
 }
 
 # La detection coute quelques secondes : on ne la refait qu'une fois par jeu.
+#
+# -Quiet : setup.ps1 resout les jeux uniquement pour recuperer leur icone. Un
+# jeu absent y est normal (on cree le raccourci quand meme), alors qu'au
+# lancement c'est un echec a expliquer. Les messages ne conviennent donc qu'a
+# l'un des deux appelants.
 function Resolve-GamePath {
-    param([string]$Name, [string]$Declared)
+    param([string]$Name, [string]$Declared, [switch]$Quiet)
 
     if ($Declared -and $Declared -ne 'auto') {
         if (Test-Path -LiteralPath $Declared) { return $Declared }
-        Write-Failure "le chemin indique dans config.ini pour $Name n'existe pas :"
-        Write-Hint $Declared
-        Write-Hint 'Corrigez la ligne, ou remplacez le chemin par : auto'
+        if (-not $Quiet) {
+            Write-Failure "le chemin indique dans config.ini pour $Name n'existe pas :"
+            Write-Hint $Declared
+            Write-Hint 'Corrigez la ligne, ou remplacez le chemin par : auto'
+        }
         return $null
     }
 
@@ -428,12 +440,14 @@ function Resolve-GamePath {
     }
     if ($cache[$Name] -and (Test-Path -LiteralPath $cache[$Name])) { return $cache[$Name] }
 
-    Write-Host "    recherche de $Name sur le disque..." -ForegroundColor DarkGray
+    if (-not $Quiet) { Write-Host "    recherche de $Name sur le disque..." -ForegroundColor DarkGray }
     $exe = Find-Game $Name
     if (-not $exe) {
-        Write-Failure "impossible de trouver $Name automatiquement."
-        Write-Hint 'Ouvrez config.ini et remplacez  auto  par le chemin complet'
-        Write-Hint "de l executable du jeu, sur la ligne  $Name ="
+        if (-not $Quiet) {
+            Write-Failure "impossible de trouver $Name automatiquement."
+            Write-Hint 'Ouvrez config.ini et remplacez  auto  par le chemin complet'
+            Write-Hint "de l executable du jeu, sur la ligne  $Name ="
+        }
         return $null
     }
 
@@ -543,6 +557,10 @@ function Invoke-Launch {
     $closeTimeout = Get-IniInt $Ini 'Options' 'CloseTimeout' 8
     $startTimeout = Get-IniInt $Ini 'Options' 'StartTimeout' 30
 
+    # Nom lisible du jeu, pour l'affichage. A defaut, la cle de [Games] fait
+    # l'affaire : c'est deja un nom, juste plus court.
+    $title = Get-IniValue $Ini "Game.$Name" 'Title' $Name
+
     # Le launcher dont le jeu a besoin pour demarrer. Il est le seul a echapper
     # aux fermetures : le fermer serait le meilleur moyen d'empecher le
     # lancement. Declare a la main, faute d'indice fiable dans le chemin du jeu.
@@ -610,7 +628,7 @@ function Invoke-Launch {
     Write-Host '[3/6] Fermeture propre des applications...'
     foreach ($app in (Get-IniList $Ini 'CloseGracefully')) {
         if ($launcher -and $app -eq $launcher) {
-            Write-Line $app "conserve (launcher de $Name)" 'DarkGray'
+            Write-Line $app "conserve (launcher de $title)" 'DarkGray'
             continue
         }
         if ($app -eq 'steam.exe') {
@@ -628,7 +646,7 @@ function Invoke-Launch {
     Write-Host '[4/6] Fermeture des utilitaires et serveurs...'
     foreach ($app in (Get-IniList $Ini 'CloseForced')) {
         if ($launcher -and $app -eq $launcher) {
-            Write-Line $app "conserve (launcher de $Name)" 'DarkGray'
+            Write-Line $app "conserve (launcher de $title)" 'DarkGray'
             continue
         }
         $path = Stop-AppForced $app
@@ -652,7 +670,7 @@ function Invoke-Launch {
 
     # ---- 6. Lancement -------------------------------------------------------
     Write-Host ''
-    Write-Host "[6/6] Lancement de $Name..."
+    Write-Host "[6/6] Lancement de $title..."
     try {
         Start-Process -FilePath $exe
     } catch {
@@ -673,8 +691,8 @@ function Invoke-Launch {
         Write-Host ''
         Write-Host 'Partie en cours.' -ForegroundColor DarkGray
         Write-Host 'Cette fenetre se reveillera a la fermeture du jeu pour tout remettre' -ForegroundColor DarkGray
-        Write-Host 'en place. La fermer maintenant n annule rien : restore-all.bat fait' -ForegroundColor DarkGray
-        Write-Host 'exactement la meme chose, a la demande.' -ForegroundColor DarkGray
+        Write-Host 'en place. La fermer maintenant n annule rien : le raccourci' -ForegroundColor DarkGray
+        Write-Host '"Tout rouvrir" fait exactement la meme chose, a la demande.' -ForegroundColor DarkGray
 
         Wait-GameExit $gameProcess (Get-IniInt $Ini 'Options' 'AutoRestoreDelay' 30)
 
@@ -693,6 +711,9 @@ function Invoke-Launch {
 # ==============================================================================
 #  Point d'entree
 # ==============================================================================
+
+# Charge par setup.ps1 avec -AsModule : on se contente de definir les fonctions.
+if ($AsModule) { return }
 
 $exitCode = 2
 try {
@@ -717,7 +738,7 @@ try {
     } elseif ($Game) {
         $exitCode = Invoke-Launch $ini $Game
     } else {
-        Write-Failure 'aucun jeu indique. Lancez plutot un raccourci "play-<jeu>.bat".'
+        Write-Failure 'aucun jeu indique. Utilisez un raccourci "Lancer ..." du Bureau.'
         $exitCode = 2
     }
 } catch {

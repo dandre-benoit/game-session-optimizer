@@ -10,9 +10,35 @@ Rien à installer : tout repose sur ce qui est déjà présent dans Windows 10 e
 
 ---
 
+## Installation
+
+> Double-cliquez sur **`setup.bat`**
+
+Il crée sur votre Bureau un raccourci par jeu — **Lancer Battlefield 6**,
+**Lancer Call of Duty 4 - Modern Warfare**… — chacun avec l'icône du jeu, plus
+un raccourci **Tout rouvrir**.
+
+C'est aussi ce qu'il faut relancer après avoir ajouté un jeu dans `config.ini` :
+les raccourcis sont simplement refaits.
+
+Pour les ranger ailleurs que sur le Bureau, renseignez `ShortcutFolder` dans
+`[Options]` — les variables d'environnement sont acceptées, et un chemin
+relatif part du dossier de l'outil :
+
+```ini
+ShortcutFolder = %USERPROFILE%\Desktop\Mes Jeux
+```
+
+Si vous changez d'avis, les raccourcis de l'ancien emplacement sont retirés à la
+relance suivante.
+
+Un jeu que l'outil ne trouve pas n'obtient pas de raccourci — il ne servirait à
+rien. Le setup vous le dit à la fin : soit le jeu n'est pas installé, soit il
+faut indiquer son chemin dans `config.ini` puis relancer.
+
 ## Utilisation
 
-> Double-cliquez sur **`play-bf6.bat`**
+> Double-cliquez sur **Lancer BF6**, sur votre Bureau
 
 C'est tout. Le PC est préparé, le jeu se lance, et à la fin de la partie tout se
 rouvre automatiquement.
@@ -21,10 +47,9 @@ Une fenêtre noire reste ouverte pendant que vous jouez : c'est normal, elle
 attend la fermeture du jeu pour faire la restauration. Vous pouvez la réduire ou
 l'ignorer, elle est derrière le jeu.
 
-Si vous la fermez quand même, rien n'est perdu : double-cliquez sur
-**`restore-all.bat`**, qui fait exactement la même chose à la demande. C'est
-aussi le raccourci à utiliser si vous préférez désactiver l'automatisme (voir
-`AutoRestore`).
+Si vous la fermez quand même, rien n'est perdu : le raccourci **Tout rouvrir**
+fait exactement la même chose à la demande. C'est aussi celui à utiliser si vous
+préférez désactiver l'automatisme (voir `AutoRestore`).
 
 Si une vérification échoue — Secure Boot désactivé, par exemple — la question
 est posée **avant** que quoi que ce soit ne soit fermé : répondre non n'a alors
@@ -100,16 +125,16 @@ acheté : le même jeu pris sur Steam demanderait `Launcher = steam.exe`.
    MONJEU = auto
    ```
 
-2. Copiez `play-bf6.bat`, renommez la copie en `play-monjeu.bat`, et remplacez
-   `BF6` par `MONJEU` sur la ligne qui commence par `powershell`.
-
-3. Ajoutez une section `[Game.MONJEU]` avec au moins son launcher :
+2. Ajoutez une section `[Game.MONJEU]` avec au moins son launcher :
 
    ```ini
    [Game.MONJEU]
    Launcher = steam.exe
    Checks = SecureBoot, ResizableBAR, NvidiaDriver, DiskSpace
    ```
+
+3. Double-cliquez sur `setup.bat` : le raccourci **Lancer MONJEU** apparaît sur
+   le Bureau.
 
 Si la recherche automatique ne connaît pas ce jeu, indiquez directement son
 chemin à l'étape 1 à la place de `auto`.
@@ -146,7 +171,10 @@ la disparition du jeu avant de conclure.
 
 **Je préfère décider moi-même quand tout se rouvre**
 Passez `AutoRestore` à `false`. La fenêtre se fermera aussitôt le jeu lancé, et
-`restore-all.bat` restera là pour la restauration.
+le raccourci **Tout rouvrir** restera là pour la restauration.
+
+**J'ai déplacé le dossier et les raccourcis ne marchent plus**
+Ils pointent vers l'ancien emplacement. Relancez `setup.bat` depuis le nouveau.
 
 **Le jeu ne démarre plus depuis que j'utilise l'outil**
 Sa plateforme a probablement été fermée juste avant le lancement. Ajoutez
@@ -156,11 +184,11 @@ Sa plateforme a probablement été fermée juste avant le lancement. Ajoutez
 
 | Fichier | Rôle |
 |---|---|
-| `play-bf6.bat` · `play-mw4.bat` | raccourcis de lancement, un par jeu |
-| `restore-all.bat` | restauration manuelle (filet de secours) |
+| `setup.bat` | crée les raccourcis du Bureau — à relancer après un ajout de jeu |
 | `config.ini` | votre configuration — créée au premier lancement |
 | `config.exemple.ini` | le modèle d'origine |
 | `session.ps1` | le moteur — aucune raison de l'ouvrir |
+| `setup.ps1` | ce que `setup.bat` exécute |
 | `preflight.ps1` | les vérifications matérielles |
 | `state\` | ce que l'outil retient d'une partie à l'autre |
 

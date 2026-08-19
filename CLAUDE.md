@@ -9,8 +9,8 @@ inconnue sans rien installer.
 
 | Fichier | Rôle |
 |---|---|
-| `play-<jeu>.bat` | raccourci double-cliquable, une ligne utile : appelle le moteur avec `-Game <NOM>` |
-| `restore-all.bat` | idem avec `-Restore` — filet manuel, la restauration étant automatique par défaut |
+| `setup.bat` | seul `.bat` du projet, double-cliquable : lance `setup.ps1` |
+| `setup.ps1` | crée les raccourcis du Bureau, un par jeu de `[Games]` plus « Tout rouvrir ». Idempotent : relancer est la façon normale de prendre en compte un ajout de jeu |
 | `session.ps1` | le moteur : il porte la session de jeu entière, de la préparation à la remise en état |
 | `preflight.ps1` | vérifications matérielles, chargées par le moteur via `. preflight.ps1 -AsModule` puis `Invoke-Preflight -Checks` |
 | `config.ini` | la configuration lue par le moteur, **jamais versionnée** |
@@ -18,8 +18,39 @@ inconnue sans rien installer.
 | `README.md` | documentation utilisateur (destinée à des amis non techniciens) |
 
 Cible : **PowerShell 5.1**, présent d'origine sur Windows 10/11. Aucune
-dépendance externe, aucune installation. Les `.bat` invoquent le moteur avec
-`-NoProfile -ExecutionPolicy Bypass`.
+dépendance externe, aucune installation. `setup.bat` et les raccourcis du
+Bureau invoquent PowerShell avec `-NoProfile -ExecutionPolicy Bypass`.
+
+## Les raccourcis du Bureau
+
+Un `.lnk` créé via `WScript.Shell` COM, dont la cible est `powershell.exe` et
+les arguments `-File <session.ps1> -Game <NOM>`. Trois conséquences à garder :
+
+- **L'icône est celle de l'exécutable du jeu** (`"$exe,0"`), ce qui suppose de
+  résoudre le jeu au moment du setup. **Un jeu introuvable n'a pas de
+  raccourci** : un `.lnk` qui échoue au double-clic est pire que pas de `.lnk`
+  du tout. Ce n'est pas une erreur pour autant — le setup continue, liste les
+  jeux sautés à la fin et dit quoi faire. D'où le `-Quiet` de
+  `Resolve-GamePath`, dont les messages ne conviennent qu'au contexte d'un
+  lancement.
+- **Le ménage se fait par les arguments** : un `.lnk` nous appartient si ses
+  arguments contiennent le chemin de *notre* `session.ps1`. Deux copies du
+  dossier ne se marchent donc pas dessus, et un raccourci personnel de
+  l'utilisateur n'est jamais supprimé. Ne pas remplacer ce test par une
+  correspondance sur le nom du fichier.
+- **`ShortcutFolder`** choisit l'emplacement, le Bureau par défaut. Le ménage
+  balaie trois dossiers : la cible, le Bureau, et `state/shortcut-folder.txt`
+  qui mémorise le dernier emplacement utilisé. Sans cette mémoire, passer d'un
+  dossier personnalisé à un autre abandonnerait les anciens raccourcis. Ce
+  fichier se lit avec `Read-TextFile` et s'écrit avec
+  `[System.IO.File]::WriteAllText` : `Set-Content -Encoding UTF8` ajoute un BOM
+  que `Trim()` ne retire pas, et le chemin relu ne désigne alors plus rien.
+- **Les chemins sont absolus** : déplacer le dossier casse les raccourcis, il
+  faut relancer `setup.bat`. C'est documenté dans le README.
+
+`session.ps1 -AsModule` charge les fonctions sans rien exécuter — c'est ce qui
+permet à `setup.ps1` de réutiliser la lecture de config et la détection des jeux
+au lieu de les redéfinir, et c'est aussi le point d'entrée des tests.
 
 ## Conventions
 
