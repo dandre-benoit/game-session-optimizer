@@ -1,0 +1,11 @@
+# Personnalisation propre a chaque machine : chemins d'installation, services
+# locaux, reglages. C'est le pendant non versionne de config.ini.
+config.local.ini
+
+# Etat entre deux parties : ce qui a ete ferme, ou se trouve chaque jeu.
+# Le dossier est versionne (via .gitkeep), son contenu ne l'est jamais.
+state/*
+!state/.gitkeep
+
+# Sauvegarde de la version precedente, conservee hors depot
+_ancienne-version/
