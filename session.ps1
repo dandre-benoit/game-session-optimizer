@@ -429,13 +429,16 @@ function Find-Game {
             "${r}Program Files (x86)\Epic Games",
             "${r}Program Files\Battle.net",
             "${r}Program Files (x86)\Call of Duty",
+            # Game Pass : les jeux vont dans XboxGames, sous un sous-dossier
+            # Content -- d'ou la profondeur de recherche un cran plus grande.
+            "${r}XboxGames",
             "${r}Games",
             "${r}Jeux"
         )
     }
     foreach ($base in $roots) {
         foreach ($folder in $entry.Folders) {
-            $exe = Find-Executable (Join-Path $base $folder) $entry.Exe 2
+            $exe = Find-Executable (Join-Path $base $folder) $entry.Exe 3
             if ($exe) { return $exe }
         }
     }
@@ -652,7 +655,12 @@ function Invoke-Launch {
     # ---- 3. Fermeture propre ------------------------------------------------
     Write-Host ''
     Write-Host '[3/6] Fermeture propre des applications...'
-    foreach ($app in (Get-IniList $Ini 'CloseGracefully')) {
+
+    # Les launchers sont une section a part dans config.ini -- leur sort depend
+    # du jeu lance -- mais ils se ferment exactement comme les autres.
+    $toClose = @(Get-IniList $Ini 'CloseGracefully') + @(Get-IniList $Ini 'Launchers')
+
+    foreach ($app in $toClose) {
         if ($launcher -and $app -eq $launcher) {
             Write-Line $app "conserve (launcher de $title)" 'DarkGray'
             continue
