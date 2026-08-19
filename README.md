@@ -2,12 +2,12 @@
 
 **Préparer le PC avant une partie, tout remettre en place après.**
 
-Cet outil ferme ce qui tourne en arrière-plan (navigateurs, utilitaires,
-synchronisation, indexation Windows…), vérifie que la machine est en état, puis
-lance le jeu. Quand vous quittez le jeu, il remet tout comme avant.
+Cet outil ferme les applications qui tournent en arrière-plan — navigateur,
+messagerie, synchronisation, indexation Windows — vérifie que la machine est en
+état de jouer, puis lance le jeu. Quand vous le quittez, tout est remis comme
+avant, à sa place.
 
-L'outil lui-même n'a besoin de rien : il repose sur ce qui est déjà présent dans
-Windows 10 et 11.
+Rien à installer : il n'utilise que ce qui est déjà présent dans Windows 10 et 11.
 
 ---
 
