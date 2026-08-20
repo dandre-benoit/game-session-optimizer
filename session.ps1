@@ -20,6 +20,7 @@
 param(
     [string]$Game,
     [switch]$Restore,
+    [switch]$Test,
     [string]$Config,
     [switch]$AsModule
 )
@@ -211,6 +212,79 @@ function Set-State {
 }
 
 # ==============================================================================
+#  Services
+# ==============================================================================
+#
+#  Arreter ou demarrer un service demande les droits administrateur. On n'eleve
+#  surtout pas tout le script : le jeu serait lance en administrateur lui aussi,
+#  ce que les anticheats et les DRM voient d'un mauvais oeil, et ses sauvegardes
+#  finiraient avec des droits qui genent ensuite. On eleve donc une seule
+#  commande, le temps de traiter tous les services d'un coup -- un seul UAC,
+#  pas un par service, et aucun si rien n'est a faire.
+
+function Test-Admin {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Renvoie les services dont l'etat a REELLEMENT change. On verifie apres coup
+# plutot que de croire un code de retour : que l'on soit passe par l'elevation
+# ou non, la seule verite est l'etat du service.
+function Set-ServiceState {
+    param(
+        [ValidateSet('Stop', 'Start')][string]$Action,
+        [string[]]$Names,
+        [bool]$Elevate = $true
+    )
+
+    $before = if ($Action -eq 'Stop') { 'Running' } else { 'Stopped' }
+    $todo = @()
+    foreach ($name in $Names) {
+        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+        # Un service absent n'est pas une erreur : la config livree est generique
+        if ($svc -and $svc.Status -eq $before) { $todo += $name }
+    }
+    if ($todo.Count -eq 0) { return @() }
+
+    if (Test-Admin) {
+        foreach ($name in $todo) {
+            try {
+                if ($Action -eq 'Stop') { Stop-Service -Name $name -Force -ErrorAction Stop }
+                else                    { Start-Service -Name $name -ErrorAction Stop }
+            } catch { }
+        }
+    } elseif ($Elevate) {
+        # Les noms de service ne contiennent ni espace ni apostrophe : la liste
+        # peut etre reinjectee telle quelle dans la commande elevee.
+        $list    = ($todo | ForEach-Object { "'$_'" }) -join ','
+        $verb    = if ($Action -eq 'Stop') { 'Stop-Service -Force' } else { 'Start-Service' }
+        $command = "foreach (`$s in @($list)) { $verb -Name `$s -ErrorAction SilentlyContinue }"
+
+        # L'UAC surgit sans crier gare : on dit d'ou il vient, sinon la fenetre
+        # bleue arrive sans explication et on ne sait pas s'il faut accepter.
+        $what = if ($Action -eq 'Stop') { 'arreter' } else { 'redemarrer' }
+        Write-Host "    Windows va demander une autorisation pour $what les services." -ForegroundColor DarkGray
+        Write-Host '    Refuser ne bloque rien : le reste continue sans eux.' -ForegroundColor DarkGray
+
+        try {
+            $null = Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command
+            )
+        } catch {
+            # UAC refuse : on continue sans les services, la partie compte plus
+        }
+    }
+
+    $changed = @()
+    foreach ($name in $todo) {
+        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -ne $before) { $changed += $name }
+    }
+    return $changed
+}
+
+# ==============================================================================
 #  Processus
 # ==============================================================================
 
@@ -233,17 +307,90 @@ function Stop-Steam {
     return $steam
 }
 
+# Les applications Electron -- Discord, VS Code, Spotify... -- ecrivent leurs
+# journaux sur la console dont elles heritent. Relancees directement depuis
+# notre fenetre, elles la noient sous des milliers de lignes juste apres la
+# restauration. "cmd /c start" les detache, exactement comme le ferait un
+# double-clic depuis l'Explorateur : elles n'ont plus de console ou ecrire.
+function Start-Detached {
+    param([string]$Path, [string]$Arguments)
+
+    # Le "" apres start est le titre de fenetre, obligatoire des que le chemin
+    # est entre guillemets -- sinon cmd prend le chemin pour un titre.
+    $cmdArgs = @('/c', 'start', '""', "`"$Path`"")
+    if ($Arguments) { $cmdArgs += $Arguments }
+
+    Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdArgs -WindowStyle Hidden
+}
+
+# Dernier recours quand le processus refuse de livrer son chemin -- cas d'une
+# application lancee en administrateur, comme PowerToys : ni .Path ni WMI ne
+# repondent. Le menu Demarrer contient un raccourci vers a peu pres tout ce qui
+# est installe, et le registre garde les dossiers d'installation.
+#
+# L'index du menu Demarrer est construit une seule fois, et seulement si on en
+# a besoin : le parcours recursif coute quelques centaines de millisecondes.
+function Find-AppPath {
+    param([string]$Name)
+
+    if ($null -eq $script:StartMenuIndex) {
+        $script:StartMenuIndex = @{}
+        $shell = New-Object -ComObject WScript.Shell
+        foreach ($base in @("$env:APPDATA\Microsoft\Windows\Start Menu",
+                            "$env:ProgramData\Microsoft\Windows\Start Menu")) {
+            foreach ($lnk in (Get-ChildItem -LiteralPath $base -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue)) {
+                try {
+                    $target = $shell.CreateShortcut($lnk.FullName).TargetPath
+                    if (-not $target) { continue }
+                    $leaf = Split-Path -Leaf $target
+                    # Le premier raccourci trouve gagne : les suivants sont
+                    # souvent des variantes (mode sans echec, desinstalleur...)
+                    if (-not $script:StartMenuIndex.ContainsKey($leaf)) {
+                        $script:StartMenuIndex[$leaf] = $target
+                    }
+                } catch { }
+            }
+        }
+    }
+
+    $found = $script:StartMenuIndex[$Name]
+    if ($found -and (Test-Path -LiteralPath $found)) { return $found }
+
+    $keys = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    foreach ($app in (Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue)) {
+        if (-not $app.InstallLocation) { continue }
+
+        # Certains installeurs stockent le chemin entre guillemets, ce qui suffit
+        # a faire echouer Join-Path ("A drive with the name '`"C' does not
+        # exist"). Le try attrape le reste : rien ici ne merite d'interrompre
+        # une preparation de partie.
+        try {
+            $folder = $app.InstallLocation.Trim().Trim('"')
+            if (-not $folder) { continue }
+            $candidate = Join-Path $folder $Name
+            if (Test-Path -LiteralPath $candidate) { return $candidate }
+        } catch { }
+    }
+    return $null
+}
+
 # Le chemin sert a la restauration : c'est lui qui evite d'avoir a saisir les
 # chemins d'installation dans config.ini. .Path echoue sur les processus plus
-# privilegies que nous, d'ou le repli sur WMI.
+# privilegies que nous, d'ou le repli sur WMI puis sur Find-AppPath.
 function Get-ProcessPath {
-    param($Process)
+    param($Process, [string]$Name)
 
     try { if ($Process.Path) { return $Process.Path } } catch { }
     try {
         $ci = Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.Id)" -ErrorAction SilentlyContinue
         if ($ci -and $ci.ExecutablePath) { return $ci.ExecutablePath }
     } catch { }
+
+    if ($Name) { return Find-AppPath $Name }
     return $null
 }
 
@@ -266,8 +413,9 @@ function Wait-GameExit {
     param([string]$Name, [int]$GraceSeconds = 30)
 
     while ($true) {
-        # Sondage lent : la partie dure des heures, inutile d'y passer du CPU
-        while ((Get-TargetProcess $Name).Count -gt 0) { Start-Sleep -Seconds 5 }
+        # 2 s : assez espace pour ne rien couter sur une partie de plusieurs
+        # heures, assez court pour que la restauration suive de pres la sortie
+        while ((Get-TargetProcess $Name).Count -gt 0) { Start-Sleep -Seconds 2 }
 
         $cameBack = $false
         for ($i = 0; $i -lt $GraceSeconds; $i++) {
@@ -297,7 +445,15 @@ function Stop-AppGracefully {
     $procs = Get-TargetProcess $Name
     if ($procs.Count -eq 0) { return $null }
 
-    $path = Get-ProcessPath $procs[0]
+    $path = Get-ProcessPath $procs[0] $Name
+
+    # Meme regle qu'en fermeture forcee : sans chemin, pas de retour possible,
+    # donc on n'y touche pas.
+    if (-not $path) {
+        Write-Line $Name 'chemin illisible, laisse ouvert' 'Yellow'
+        return $null
+    }
+
     Write-Host "    - $Name " -NoNewline
     foreach ($p in $procs) { try { $null = $p.CloseMainWindow() } catch { } }
 
@@ -318,7 +474,17 @@ function Stop-AppForced {
     $procs = Get-TargetProcess $Name
     if ($procs.Count -eq 0) { return $null }
 
-    $path = Get-ProcessPath $procs[0]
+    $path = Get-ProcessPath $procs[0] $Name
+
+    # Sans chemin, on ne saurait pas la relancer : on ne la ferme pas. Mieux
+    # vaut une application de trop pendant la partie qu'une application perdue
+    # jusqu'au prochain redemarrage. Cas typique : un processus lance en
+    # administrateur, qui ne livre son chemin ni par .Path ni par WMI.
+    if (-not $path) {
+        if (-not $Quiet) { Write-Line $Name 'chemin illisible, laisse ouvert' 'Yellow' }
+        return $null
+    }
+
     if (-not $Quiet) { Write-Line $Name '(force)' 'DarkGray' }
     foreach ($p in $procs) { try { $p.Kill() } catch { } }
     return $path
@@ -491,6 +657,8 @@ function Resolve-GamePath {
 #  Session : ce qui a ete ferme, pour pouvoir le relancer ensuite
 # ==============================================================================
 
+# Chaque lancement repart de zero : la session decrit ce qui a ete ferme
+# cette fois-ci, rien d'autre.
 function Save-SessionState {
     param($Apps, $Services)
 
@@ -519,22 +687,16 @@ function Invoke-Restore {
     Write-Host 'Redemarrage des services...'
     $services = @($session.Services)
     if ($services.Count -eq 0) { Write-Host '    (aucun)' -ForegroundColor DarkGray }
+
+    $started = @(Set-ServiceState -Action Start -Names $services `
+                                  -Elevate (Get-IniBool $Ini 'Options' 'ElevateForServices' $true))
+
     foreach ($name in $services) {
         $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
-        if (-not $svc) {
-            Write-Line $name 'service introuvable, ignore' 'Yellow'
-            continue
-        }
-        if ($svc.Status -eq 'Running') {
-            Write-Line $name 'deja demarre' 'DarkGray'
-            continue
-        }
-        try {
-            Start-Service -Name $name -ErrorAction Stop
-            Write-Line $name 'demarre' 'Green'
-        } catch {
-            Write-Line $name 'echec (droits administrateur ?)' 'Yellow'
-        }
+        if (-not $svc)                        { Write-Line $name 'service introuvable, ignore' 'Yellow' }
+        elseif ($started -contains $name)     { Write-Line $name 'demarre' 'Green' }
+        elseif ($svc.Status -eq 'Running')    { Write-Line $name 'deja demarre' 'DarkGray' }
+        else                                  { Write-Line $name 'echec (autorisation refusee ?)' 'Yellow' }
     }
 
     Write-Host ''
@@ -551,9 +713,7 @@ function Invoke-Restore {
             continue
         }
         try {
-            $arguments = Get-IniValue $Ini 'Arguments' $app.Process
-            if ($arguments) { Start-Process -FilePath $app.Path -ArgumentList $arguments }
-            else            { Start-Process -FilePath $app.Path }
+            Start-Detached $app.Path (Get-IniValue $Ini 'Arguments' $app.Process)
             Write-Line $app.Process 'demarre' 'Green'
         } catch {
             Write-Line $app.Process 'echec au demarrage' 'Yellow'
@@ -570,30 +730,47 @@ function Invoke-Restore {
 # ==============================================================================
 
 function Invoke-Launch {
-    param($Ini, [string]$Name)
+    param($Ini, [string]$Name, [switch]$Test)
 
-    $declared = Get-IniValue $Ini 'Games' $Name
-    if ($null -eq $declared) {
-        Write-Failure "le jeu `"$Name`" n'est pas declare dans config.ini."
-        Write-Hint "Ajoutez une ligne   $Name = auto   sous [Games]."
-        return 2
+    if ($Test) {
+        # Le cycle complet, mais avec un faux jeu : tout est reellement ferme
+        # et restaure, seul le jeu est remplace par une fenetre qui attend.
+        # Rien a declarer dans [Games], c'est un mode a part.
+        $exe = Join-Path $script:Root 'fake-game.bat'
+        if (-not (Test-Path -LiteralPath $exe)) {
+            Write-Failure 'fake-game.bat est introuvable a cote de session.ps1.'
+            return 2
+        }
+        $title = 'Test (faux jeu)'
+        # Un .bat s'execute dans cmd.exe : c'est ce processus qu'on surveille
+        $gameProcess = 'cmd.exe'
+        # Aucun launcher epargne : le test ferme tout, c'est bien l'interet
+        $launcher = $null
+    } else {
+        $declared = Get-IniValue $Ini 'Games' $Name
+        if ($null -eq $declared) {
+            Write-Failure "le jeu `"$Name`" n'est pas declare dans config.ini."
+            Write-Hint "Ajoutez une ligne   $Name = auto   sous [Games]."
+            return 2
+        }
+
+        $exe = Resolve-GamePath $Name $declared
+        if (-not $exe) { return 2 }
+        $gameProcess = Split-Path -Leaf $exe
+
+        # Nom lisible du jeu, pour l'affichage. A defaut, la cle de [Games] fait
+        # l'affaire : c'est deja un nom, juste plus court.
+        $title = Get-IniValue $Ini "Game.$Name" 'Title' $Name
+
+        # Le launcher dont le jeu a besoin pour demarrer. Il est le seul a
+        # echapper aux fermetures : le fermer serait le meilleur moyen
+        # d'empecher le lancement. Declare a la main, faute d'indice fiable
+        # dans le chemin du jeu.
+        $launcher = Get-IniValue $Ini "Game.$Name" 'Launcher'
     }
-
-    $exe = Resolve-GamePath $Name $declared
-    if (-not $exe) { return 2 }
-    $gameProcess = Split-Path -Leaf $exe
 
     $closeTimeout = Get-IniInt $Ini 'Options' 'CloseTimeout' 8
     $startTimeout = Get-IniInt $Ini 'Options' 'StartTimeout' 30
-
-    # Nom lisible du jeu, pour l'affichage. A defaut, la cle de [Games] fait
-    # l'affaire : c'est deja un nom, juste plus court.
-    $title = Get-IniValue $Ini "Game.$Name" 'Title' $Name
-
-    # Le launcher dont le jeu a besoin pour demarrer. Il est le seul a echapper
-    # aux fermetures : le fermer serait le meilleur moyen d'empecher le
-    # lancement. Declare a la main, faute d'indice fiable dans le chemin du jeu.
-    $launcher = Get-IniValue $Ini "Game.$Name" 'Launcher'
 
     # ---- 1. Verifications ---------------------------------------------------
     Write-Host ''
@@ -626,6 +803,14 @@ function Invoke-Launch {
         }
     }
 
+    # A partir d'ici on touche a la machine : la session repart de zero. Une
+    # session precedente encore presente serait perimee, et "Tout rouvrir"
+    # relancerait des applications d'une partie d'avant.
+    #
+    # Efface ici et pas plus haut : tant que la question du preflight n'a pas
+    # eu de reponse, annuler ne doit rien couter.
+    Set-State 'session' $null
+
     $closedApps     = @()
     $stoppedServices = @()
 
@@ -637,20 +822,22 @@ function Invoke-Launch {
     # de micro-freezes en pleine partie.
     if (Get-IniBool $Ini 'Options' 'StopSearchIndexing' $true) { $serviceList += 'WSearch' }
 
-    $anyStopped = $false
-    foreach ($name in $serviceList) {
-        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
-        if (-not $svc -or $svc.Status -ne 'Running') { continue }
-        $anyStopped = $true
-        try {
-            Stop-Service -Name $name -Force -ErrorAction Stop
-            $stoppedServices += $name
-            Write-Line $name 'arrete' 'Green'
-        } catch {
-            Write-Line $name 'echec (droits administrateur ?)' 'Yellow'
-        }
+    # Ce qui tournait avant, pour distinguer plus bas ce qui a resiste
+    $running = @($serviceList | Where-Object {
+        $svc = Get-Service -Name $_ -ErrorAction SilentlyContinue
+        $svc -and $svc.Status -eq 'Running'
+    })
+
+    $stoppedServices = @(Set-ServiceState -Action Stop -Names $serviceList `
+                                          -Elevate (Get-IniBool $Ini 'Options' 'ElevateForServices' $true))
+
+    if ($running.Count -eq 0) {
+        Write-Host '    (aucun service a arreter)' -ForegroundColor DarkGray
     }
-    if (-not $anyStopped) { Write-Host '    (aucun service a arreter)' -ForegroundColor DarkGray }
+    foreach ($name in $running) {
+        if ($stoppedServices -contains $name) { Write-Line $name 'arrete' 'Green' }
+        else { Write-Line $name 'echec (autorisation refusee ?)' 'Yellow' }
+    }
 
     # ---- 3. Fermeture propre ------------------------------------------------
     Write-Host ''
@@ -706,7 +893,9 @@ function Invoke-Launch {
     Write-Host ''
     Write-Host "[6/6] Lancement de $title..."
     try {
-        Start-Process -FilePath $exe
+        # Detache lui aussi : un jeu bavard noierait la console qui doit rester
+        # lisible pendant toute la partie.
+        Start-Detached $exe
     } catch {
         Write-Failure 'impossible de lancer le jeu :'
         Write-Hint $exe
@@ -728,7 +917,7 @@ function Invoke-Launch {
         Write-Host 'en place. La fermer maintenant n annule rien : le raccourci' -ForegroundColor DarkGray
         Write-Host '"Tout rouvrir" fait exactement la meme chose, a la demande.' -ForegroundColor DarkGray
 
-        Wait-GameExit $gameProcess (Get-IniInt $Ini 'Options' 'AutoRestoreDelay' 30)
+        Wait-GameExit $gameProcess (Get-IniInt $Ini 'Options' 'AutoRestoreDelay' 10)
 
         Write-Host ''
         Write-Host "$gameProcess s'est ferme, restauration..." -ForegroundColor Green
@@ -769,6 +958,8 @@ try {
 
     if ($Restore) {
         $exitCode = Invoke-Restore $ini
+    } elseif ($Test) {
+        $exitCode = Invoke-Launch $ini '' -Test
     } elseif ($Game) {
         $exitCode = Invoke-Launch $ini $Game
     } else {
@@ -780,5 +971,7 @@ try {
     $exitCode = 2
 }
 
-if ($exitCode -eq 2) { Wait-KeyPress }
+# La fenetre ne se referme jamais toute seule : on doit pouvoir lire ce qui
+# s'est passe, surtout apres la restauration qui arrive des heures plus tard.
+Wait-KeyPress
 exit $exitCode

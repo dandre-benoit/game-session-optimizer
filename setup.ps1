@@ -193,6 +193,18 @@ foreach ($game in $games) {
 # Icone de restauration : la fleche circulaire de shell32.dll. Purement
 # cosmetique -- si l'index bouge d'une version de Windows a l'autre, le
 # raccourci fonctionne quand meme.
+# Raccourci de test : le cycle complet avec un faux jeu, pour verifier que tout
+# ferme et rouvre correctement sans lancer une vraie partie. Hors defaut : ca ne
+# concerne que celui qui bricole l'outil.
+if (Get-IniBool $ini 'Options' 'TestShortcut' $false) {
+    Write-Host '    - Test (faux jeu) ' -NoNewline
+    $null = New-Shortcut -Name 'Tester le mode jeu' `
+                         -Arguments '-Test' `
+                         -IconPath "$env:WINDIR\System32\shell32.dll,23" `
+                         -Description 'Cycle complet avec un faux jeu, pour verifier l outil'
+    Write-Host 'ok' -ForegroundColor Green
+}
+
 Write-Host '    - Tout rouvrir ' -NoNewline
 $null = New-Shortcut -Name 'Tout rouvrir' `
                      -Arguments '-Restore' `
