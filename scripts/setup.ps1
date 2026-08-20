@@ -1,18 +1,19 @@
-<#
+﻿<#
  ==============================================================================
-  setup.ps1 - cree les raccourcis de lancement
+  setup.ps1 - crée les raccourcis de lancement
 
-  Un raccourci par jeu declare dans [Games], plus un raccourci de restauration.
-  Un jeu introuvable est ignore : creer un raccourci qui ne lance rien ne
-  rendrait service a personne. L icone de chaque raccourci est celle du jeu
-  lui-meme. Ils vont sur le Bureau, ou dans le dossier indique par
+  Un raccourci par jeu déclaré dans [Games], un pour tout rouvrir après la
+  partie, et un « Tester ma configuration » si TestShortcut vaut true.
+  Un jeu introuvable est ignoré : créer un raccourci qui ne lance rien ne
+  rendrait service à personne. L'icône de chaque raccourci est celle du jeu
+  lui-même. Ils vont sur le Bureau, ou dans le dossier indiqué par
   ShortcutFolder.
 
-  Relancable a volonte : les raccourcis existants sont refaits, et ceux des
-  jeux retires de config.ini disparaissent. C est la maniere normale de prendre
+  Relançable à volonté : les raccourcis existants sont refaits, et ceux des
+  jeux retirés de config.ini disparaissent. C'est la manière normale de prendre
   en compte un ajout de jeu.
 
-  Lance par setup.bat, mais utilisable seul.
+  Lancé par setup.bat, mais utilisable seul.
  ==============================================================================
 #>
 [CmdletBinding()]
@@ -26,25 +27,17 @@ $ErrorActionPreference = 'Stop'
 $script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Root      = Split-Path -Parent $script:ScriptDir
 
-# Jumelle de Wait-KeyPress dans session.ps1, redefinie ici parce que les
-# premieres erreurs surviennent avant d'avoir pu charger le moteur.
-function Wait-AnyKey {
-    Write-Host ''
-    Write-Host 'Appuyez sur une touche pour fermer...' -ForegroundColor DarkGray
-
-    # Vider le tampon : sans ca, une frappe restee en file ferait passer
-    # ReadKey sans attendre et la fenetre se refermerait seule.
-    try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
-    try   { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') }
-    catch { Start-Sleep -Seconds 5 }
-}
+# Affichage commun. Charge avant le moteur : les premieres erreurs possibles
+# surviennent justement quand celui-ci est introuvable.
+. (Join-Path $script:ScriptDir 'ui.ps1')
+Initialize-Console
 
 $engine = Join-Path $script:ScriptDir 'session.ps1'
 
 if (-not (Test-Path -LiteralPath $engine)) {
     Write-Host ''
     Write-Host 'ERREUR : session.ps1 est introuvable dans le dossier scripts.' -ForegroundColor Red
-    Write-Host '         Les fichiers doivent rester ensemble dans le meme dossier.' -ForegroundColor DarkGray
+    Write-Host '         Les fichiers doivent rester ensemble dans le même dossier.' -ForegroundColor DarkGray
     Wait-AnyKey
     exit 2
 }
@@ -89,7 +82,7 @@ if (-not (Test-Path -LiteralPath $target)) {
         $null = New-Item -ItemType Directory -Path $target -Force
     } catch {
         Write-Host ''
-        Write-Host "ERREUR : impossible de creer le dossier des raccourcis :" -ForegroundColor Red
+        Write-Host "ERREUR : impossible de créer le dossier des raccourcis :" -ForegroundColor Red
         Write-Host "         $target" -ForegroundColor DarkGray
         Write-Host '         Corrigez ShortcutFolder dans config.ini.' -ForegroundColor DarkGray
         Wait-AnyKey
@@ -164,32 +157,42 @@ function Remove-OwnShortcuts {
 
 if ($configCreated) {
     Write-Host ''
-    Write-Host 'Premiere utilisation : config.ini vient d etre cree a partir du modele.' -ForegroundColor Cyan
-    Write-Host 'Les raccourcis ci-dessous correspondent aux jeux qu il contient. Pour en' -ForegroundColor DarkGray
+    Write-Host 'Première utilisation : config.ini vient d''être créé à partir du modèle.' -ForegroundColor Cyan
+    Write-Host 'Les raccourcis ci-dessous correspondent aux jeux qu''il contient. Pour en' -ForegroundColor DarkGray
     Write-Host 'ajouter, ouvrez config.ini avec le Bloc-notes puis relancez setup.bat.' -ForegroundColor DarkGray
 }
 
-Write-Host ''
-Write-Host 'Creation des raccourcis dans :'
+Write-Step 'Création des raccourcis dans :'
 Write-Host "    $target" -ForegroundColor Cyan
 Write-Host ''
 
 $old = Remove-OwnShortcuts @($target, $desktop)
-if ($old -gt 0) { Write-Host "    ($old ancien(s) raccourci(s) remplace(s))" -ForegroundColor DarkGray }
+if ($old -gt 0) { Write-Host "    ($old ancien(s) raccourci(s) remplacé(s))" -ForegroundColor DarkGray }
 
 $games   = @(Get-IniList $ini 'Games')
 $created = 0
 $skipped = @()
 
 if ($games.Count -eq 0) {
-    Write-Host '    aucun jeu declare dans [Games] : rien a creer.' -ForegroundColor Yellow
+    Write-Host '    aucun jeu déclaré dans [Games] : rien à créer.' -ForegroundColor Yellow
 }
 
-foreach ($game in $games) {
-    # Nom lisible du jeu, a defaut la cle de [Games]. C'est lui qui nomme le
-    # raccourci : "Lancer Battlefield 6" plutot que "Lancer BF6".
-    $title = Get-IniValue $ini "Game.$game" 'Title' $game
-    Write-Host "    - $title " -NoNewline
+# Les raccourcis fixes, connus d'avance : ils rejoignent la même liste que les
+# jeux pour que tout s'affiche d'un seul bloc.
+$fixes = @()
+if (Get-IniBool $ini 'Options' 'TestShortcut' $false) { $fixes += 'Tester ma configuration' }
+$fixes += 'Tout rouvrir'
+
+# Nom lisible de chaque jeu, à défaut la clé de [Games] : c'est lui qui nomme
+# le raccourci, « Lancer Battlefield 6 » plutôt que « Lancer BF6 ».
+$titles = @($games | ForEach-Object { Get-IniValue $ini "Game.$_" 'Title' $_ })
+
+# Toute la liste s'affiche en attente, puis chaque ligne se résout
+Start-StatusList (@($titles) + $fixes)
+
+for ($i = 0; $i -lt $games.Count; $i++) {
+    $game  = $games[$i]
+    $title = $titles[$i]
 
     # Il faut savoir ou est le jeu, pour son icone mais surtout pour ne pas
     # creer un raccourci qui ne lancerait rien.
@@ -197,7 +200,7 @@ foreach ($game in $games) {
     try { $exe = Resolve-GamePath $game (Get-IniValue $ini 'Games' $game) -Quiet } catch { }
 
     if (-not $exe) {
-        Write-Host 'introuvable, ignore' -ForegroundColor Yellow
+        Update-StatusItem $i 'Warn' 'jeu introuvable, pas de raccourci'
         $skipped += $game
         continue
     }
@@ -205,43 +208,49 @@ foreach ($game in $games) {
     $null = New-Shortcut -Name "Lancer $title" `
                          -Arguments "-Game $game" `
                          -IconPath "$exe,0" `
-                         -Description "Prepare le PC et lance $title"
-    Write-Host 'ok' -ForegroundColor Green
+                         -Description "Prépare le PC et lance $title"
+    Update-StatusItem $i 'Ok' 'raccourci créé'
     $created++
+}
+
+# Les raccourcis qui ne correspondent a aucun jeu, pour le resume final
+$extras = @()
+$rang   = $games.Count
+
+# Raccourci de test : le cycle complet avec un faux jeu, pour verifier que tout
+# ferme et rouvre correctement sans lancer une vraie partie. Hors defaut : ca ne
+# concerne que celui qui bricole l'outil.
+if ($fixes -contains 'Tester ma configuration') {
+    $null = New-Shortcut -Name 'Tester ma configuration' `
+                         -Arguments '-Test' `
+                         -IconPath "$env:WINDIR\System32\shell32.dll,23" `
+                         -Description 'Cycle complet avec un faux jeu, pour vérifier l''outil'
+    Update-StatusItem $rang 'Ok' 'raccourci créé'
+    $extras += 'Tester ma configuration'
+    $rang++
 }
 
 # Icone de restauration : la fleche circulaire de shell32.dll. Purement
 # cosmetique -- si l'index bouge d'une version de Windows a l'autre, le
 # raccourci fonctionne quand meme.
-# Raccourci de test : le cycle complet avec un faux jeu, pour verifier que tout
-# ferme et rouvre correctement sans lancer une vraie partie. Hors defaut : ca ne
-# concerne que celui qui bricole l'outil.
-if (Get-IniBool $ini 'Options' 'TestShortcut' $false) {
-    Write-Host '    - Test (faux jeu) ' -NoNewline
-    $null = New-Shortcut -Name 'Tester le mode jeu' `
-                         -Arguments '-Test' `
-                         -IconPath "$env:WINDIR\System32\shell32.dll,23" `
-                         -Description 'Cycle complet avec un faux jeu, pour verifier l outil'
-    Write-Host 'ok' -ForegroundColor Green
-}
-
-Write-Host '    - Tout rouvrir ' -NoNewline
 $null = New-Shortcut -Name 'Tout rouvrir' `
                      -Arguments '-Restore' `
                      -IconPath "$env:WINDIR\System32\shell32.dll,238" `
-                     -Description 'Remet en place ce qui a ete ferme avant la partie'
-Write-Host 'ok' -ForegroundColor Green
+                     -Description 'Remet en place ce qui a été fermé avant la partie'
+Update-StatusItem $rang 'Ok' 'raccourci créé'
+$extras += 'Tout rouvrir'
 
+Complete-StatusList
 Write-Host ''
-Write-Host "Termine. $created raccourci(s) de jeu, plus Tout rouvrir." -ForegroundColor Green
+Write-Host "Terminé. $created raccourci(s) de jeu, plus $($extras -join ' et ')." -ForegroundColor Green
 
 if ($skipped.Count -gt 0) {
     Write-Host ''
-    Write-Host "Sans raccourci, faute d'avoir trouve le jeu : $($skipped -join ', ')" -ForegroundColor Yellow
-    Write-Host '  - soit le jeu n est pas installe sur ce PC ;' -ForegroundColor DarkGray
-    Write-Host '  - soit il l est, mais ailleurs que la ou on l a cherche : dans ce cas' -ForegroundColor DarkGray
+    Write-Host "Sans raccourci, faute d'avoir trouvé le jeu : $($skipped -join ', ')" -ForegroundColor Yellow
+    Write-Host '  - soit le jeu n''est pas installé sur ce PC ;' -ForegroundColor DarkGray
+    Write-Host '  - soit il l''est, mais ailleurs qu''aux endroits cherchés : dans ce cas' -ForegroundColor DarkGray
     Write-Host '    ouvrez config.ini et remplacez  auto  par le chemin complet de son' -ForegroundColor DarkGray
-    Write-Host '    executable, sous [Games].' -ForegroundColor DarkGray
+    Write-Host '    exécutable, sous [Games].' -ForegroundColor DarkGray
     Write-Host '  Relancez setup ensuite.' -ForegroundColor DarkGray
 }
 

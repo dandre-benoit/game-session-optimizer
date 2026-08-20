@@ -64,22 +64,61 @@ au lieu de les redéfinir, et c'est aussi le point d'entrée des tests.
 ## Conventions
 
 **Nommage des fichiers** — minuscules, tirets, pas d'espaces (`session.ps1`,
-`play-bf6.bat`, `config.exemple.ini`). Seules exceptions, conventionnelles :
+`fake-game.bat`, `config.exemple.ini`). Seules exceptions, conventionnelles :
 `README.md` et `CLAUDE.md`.
 
-**Langue** — tous les identifiants en anglais : fonctions, paramètres,
-variables, mais aussi les sections et clés de `config.ini` (`[CloseGracefully]`,
-`StartTimeout`), puisqu'elles sont consommées par le code. Les commentaires et
-la documentation sont en français.
+**Langue** — la règle est stricte et sans exception :
 
-**Encodage** — les `.ps1` sont en **ASCII pur**, y compris dans les
-commentaires. Deux raisons cumulées : PowerShell 5.1 lit un `.ps1` sans BOM
-comme de l'ANSI, et la console héritée du `.bat` tourne en codepage OEM. Les
-accents y sortiraient cassés. Les `.ini` et les `.md`, eux, sont en UTF-8 avec
-accents — ils sont lus par un humain, dans le Bloc-notes ou sur la page du
-dépôt, jamais affichés dans la console.
+| Quoi | Langue |
+|---|---|
+| Identifiants : fonctions, paramètres, variables | **anglais** |
+| Sections et clés de `config.ini` | **anglais** — elles sont consommées par le code |
+| Noms de fichiers | **anglais** |
+| Commentaires | **français, avec accents** |
+| Messages affichés à l'utilisateur | **français, avec accents** |
+| README, valeurs de `Title`, noms des raccourcis | **français, avec accents** |
 
-**Sortie console** — sans accents, pour la même raison.
+Aucun `Get-Jeu`, aucun `[Jeux]`, aucun `$titre` — mais aucun « Verification en
+echec » non plus. Un identifiant anglais qui affiche un message français
+accentué, c'est la norme du projet, pas une incohérence.
+
+Les accents sont **obligatoires** partout où du français apparaît, y compris
+dans la sortie console : l'encodage est réglé pour ça (voir plus bas). Écrire
+« demarre » ou « arretee » est un bug, pas un raccourci.
+
+Unique exception, technique et documentée plus bas : `setup.bat` reste en ASCII
+sans accents, parce qu'un `.bat` contenant des `goto` ne survit pas au
+changement de page de code. Ses deux messages d'erreur sont les seuls textes du
+projet sans accents.
+
+**Encodage** — tout est en UTF-8, accents compris, y compris la sortie console.
+Deux conditions le permettent, et **retirer l'une des deux casse l'affichage** :
+
+1. Les `.ps1` sont enregistrés en **UTF-8 avec BOM**. Sans lui, PowerShell 5.1
+   lit le fichier comme de l'ANSI et abîme les accents dès la lecture.
+2. Chaque script exécutable commence par
+   `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`. Sans ça, la
+   console héritée du `.bat` écrit en codepage OEM.
+
+Les `.bat`, eux, sont un cas à part : **`chcp` en cours d'exécution décale
+l'offset de lecture de `cmd.exe`**, qui se met alors à tronquer le début des
+lignes suivantes (`'ershell' is not recognized...`) et ne retrouve plus ses
+labels. C'est fatal dès qu'un fichier contient un `goto`.
+
+- `setup.bat` a des `goto` : **ni `chcp` ni accents**, ASCII pur sans BOM. Ses
+  deux messages d'erreur s'en passent très bien, et PowerShell force de toute
+  façon son propre encodage pour tout le reste de l'affichage.
+- `fake-game.bat` est linéaire, sans aucun `goto` : il peut porter `chcp 65001`
+  et ses accents. Testé.
+
+Une version antérieure imposait l'ASCII pur partout, faute d'avoir su faire
+tenir les accents en console. Ne pas y revenir : c'est testé, y compris avec
+une console forcée en codepage 850.
+
+**Symboles** — `Write-Check` utilise `✓` (U+2713) et `✗` (U+2717), écrits
+`[char]0x2713` plutôt qu'en littéral pour ne pas dépendre de l'encodage du
+fichier source. Ils s'affichent dans Consolas, la police par défaut des
+consoles Windows 10/11.
 
 ## Points de conception à préserver
 
@@ -129,17 +168,17 @@ console reste ouverte pendant la partie, `Wait-GameExit` attend la fermeture du
 jeu, puis `Invoke-Restore` s'exécute. C'est ce qui justifie le nom du fichier :
 il porte la session entière, pas seulement le lancement.
 
-Deux garde-fous indispensables ici. D'abord le **délai de grâce**
-(`AutoRestoreDelay`) : un launcher relance parfois le processus du jeu — mise à
-jour, retour au menu — et sans ce délai tout rouvrirait en pleine partie. Après
-la disparition du processus, on observe et on repart en attente s'il revient.
-Ensuite, l'automatisme ne doit jamais être le **seul** chemin : si l'utilisateur
-ferme la console, `restore-all.bat` doit rester capable de tout remettre en
-place. La session est écrite sur disque *avant* le lancement du jeu, jamais
-après.
+`Wait-GameExit` attend simplement la disparition du processus, en sondant à la
+seconde. Un délai de grâce a existé — on observait quelques secondes de plus au
+cas où un launcher relance le jeu après une mise à jour — puis a été retiré : il
+s'ajoutait au temps d'attente perçu à chaque partie pour couvrir un cas rare,
+où de toute façon la mise à jour dure bien plus longtemps que le délai. Ne pas
+le réintroduire sans motif solide.
 
-Le sondage d'attente est volontairement lent (5 s) : la boucle peut tourner des
-heures.
+Le garde-fou qui reste, lui, est indispensable : l'automatisme ne doit jamais
+être le **seul** chemin. Si l'utilisateur ferme la console, le raccourci
+« Tout rouvrir » doit rester capable de tout remettre en place. La session est
+donc écrite sur disque *avant* le lancement du jeu, jamais après.
 
 **Vérifications adaptatives** — une vérification inapplicable (pas de carte
 NVIDIA) est signalée `?` et ne fait pas échouer le lancement. Seul un vrai

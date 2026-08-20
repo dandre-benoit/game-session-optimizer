@@ -218,28 +218,25 @@ installe une mise à jour. Rien n'est cassé. Augmentez `StartTimeout` dans
 Elle a peut-être été déplacée ou désinstallée depuis la partie. Relancez-la à la
 main une fois : le prochain cycle relèvera le nouveau chemin.
 
-**Tout s'est rouvert alors que je jouais encore**
-Le launcher a relancé le jeu (mise à jour, retour au menu) et l'outil a cru la
-partie finie. Augmentez `AutoRestoreDelay` : c'est le temps qu'il observe après
-la disparition du jeu avant de conclure.
-
 **Je préfère décider moi-même quand tout se rouvre**
 Passez `AutoRestore` à `false`. Le script s'arrête dès le jeu lancé, et le
 raccourci **Tout rouvrir** reste là pour la restauration, quand ça vous arrange.
 
-Dans ce cas, ajoutez aussi `KeepWindowOpen = false` : sans ça la fenêtre noire
-attend une touche avant de disparaître, ce qui n'a plus d'intérêt puisqu'il n'y
-a plus rien à lire.
-
 ```ini
 [Options]
 AutoRestore = false
-KeepWindowOpen = false
 ```
 
 Vous n'avez alors plus rien à l'écran pendant la partie, et plus aucun processus
-de l'outil en mémoire. En cas d'erreur, la fenêtre attend malgré tout : un
-message que personne ne lit ne sert à rien.
+de l'outil en mémoire.
+
+**Je voudrais relire ce qui s'est passé**
+La fenêtre se ferme seule quand tout va bien. Passez `KeepWindowOpen` à `true`
+pour qu'elle attende une touche à chaque fois.
+
+Ce n'est pas nécessaire dans les deux cas où l'on a justement quelque chose à
+lire : en cas d'erreur, et avec le raccourci **Tester ma configuration**. Dans
+ces deux situations elle attend toujours.
 
 **J'ai déplacé le dossier et les raccourcis ne marchent plus**
 Ils pointent vers l'ancien emplacement. Relancez `setup.bat` depuis le nouveau.

@@ -1,19 +1,20 @@
-<#
+﻿<#
  ==============================================================================
-  session.ps1 - moteur generique de lancement de jeu
+  session.ps1 - moteur générique de lancement de jeu
 
-  Ce fichier n'a pas vocation a etre edite : toute la configuration se fait
-  dans config.ini, a cote. Il est appele par les raccourcis du Bureau que
-  setup.ps1 a crees.
+  Ce fichier n'a pas vocation à être édité : toute la configuration se fait
+  dans config.ini, à la racine. Il est appelé par les raccourcis du Bureau que
+  setup.ps1 a créés.
 
-    -Game <nom>   nom d'une entree de la section [Games] de config.ini
-    -Restore      relance ce qui a ete ferme au dernier passage
+    -Game <nom>   nom d'une entrée de la section [Games] de config.ini
+    -Restore      relance ce qui a été fermé au dernier passage
+    -Test         déroule le cycle complet avec un faux jeu
     -Config       chemin d'un config.ini alternatif
     -AsModule     ne fait rien : charge seulement les fonctions, pour que
-                  setup.ps1 (et les tests) reutilisent la lecture de config et
-                  la detection des jeux sans les redefinir
+                  setup.ps1 (et les tests) réutilisent la lecture de config et
+                  la détection des jeux sans les redéfinir
 
-  Codes de sortie : 0 = ok, 1 = annule par l'utilisateur, 2 = erreur.
+  Codes de sortie : 0 = ok, 1 = annulé par l'utilisateur, 2 = erreur.
  ==============================================================================
 #>
 [CmdletBinding()]
@@ -44,44 +45,11 @@ $script:ConfigTemplate = Join-Path (Split-Path -Parent $Config) `
 # bloc. Un seul fichier, donc une seule ligne de .gitignore.
 $script:StateFile = Join-Path $script:Root 'state.json'
 
-# Fichier en ASCII pur, accents compris dans les commentaires : PowerShell 5.1
-# lit un .ps1 sans BOM comme de l'ANSI, et la console heritee du .bat tourne en
-# codepage OEM. Les deux abimeraient les accents.
+# Affichage commun a tout le projet. Le fichier est en UTF-8 AVEC BOM, sinon
+# PowerShell 5.1 le lirait comme de l'ANSI et abimerait les accents.
+. (Join-Path $script:ScriptDir 'ui.ps1')
+Initialize-Console
 
-# ==============================================================================
-#  Affichage
-# ==============================================================================
-
-function Write-Line {
-    param([string]$Text, [string]$Status = '', [string]$Color = 'Gray')
-    Write-Host "    - $Text" -NoNewline
-    if ($Status) { Write-Host " $Status" -ForegroundColor $Color } else { Write-Host '' }
-}
-
-function Write-Failure {
-    param([string]$Text)
-    Write-Host ''
-    Write-Host "ERREUR : $Text" -ForegroundColor Red
-}
-
-function Write-Hint {
-    param([string]$Text)
-    Write-Host "         $Text" -ForegroundColor DarkGray
-}
-
-function Wait-KeyPress {
-    Write-Host ''
-    Write-Host 'Appuyez sur une touche pour fermer...' -ForegroundColor DarkGray
-
-    # Vider le tampon d'abord : pendant la partie, la console a pu recevoir des
-    # frappes. Sans ce vidage, ReadKey trouverait une touche deja en attente et
-    # rendrait la main aussitot -- la fenetre se refermerait toute seule.
-    try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
-
-    # ReadKey n'existe pas hors console interactive : dans ce cas on ne bloque pas
-    try   { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') }
-    catch { Start-Sleep -Seconds 5 }
-}
 
 # ==============================================================================
 #  Lecture de config.ini
@@ -273,7 +241,7 @@ function Set-ServiceState {
 
         # L'UAC surgit sans crier gare : on dit d'ou il vient, sinon la fenetre
         # bleue arrive sans explication et on ne sait pas s'il faut accepter.
-        $what = if ($Action -eq 'Stop') { 'arreter' } else { 'redemarrer' }
+        $what = if ($Action -eq 'Stop') { 'arrêter' } else { 'redémarrer' }
         Write-Host "    Windows va demander une autorisation pour $what les services." -ForegroundColor DarkGray
         Write-Host '    Refuser ne bloque rien : le reste continue sans eux.' -ForegroundColor DarkGray
 
@@ -310,11 +278,9 @@ function Stop-Steam {
     $steam = Get-SteamPath
     if (-not $steam) { return $null }
 
-    Write-Host '    - steam.exe ' -NoNewline
     Start-Process -FilePath $steam -ArgumentList '-shutdown'
     $null = Wait-ProcessExit 'steam.exe' 15
-    Write-Host ' ok' -ForegroundColor Green
-    return $steam
+    return @{ Path = $steam; State = 'Ok'; Detail = 'fermé (-shutdown)' }
 }
 
 # Les applications Electron -- Discord, VS Code, Spotify... -- ecrivent leurs
@@ -340,25 +306,73 @@ function Start-Detached {
     Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdArgs -WindowStyle Hidden
 }
 
-# Une application sans fenetre de premier niveau tourne en arriere-plan : soit
-# reduite dans la zone de notification, soit prechargee par Windows.
+# Vrai seulement si l'application a une fenetre REELLEMENT affichee. Reduite
+# dans la barre des taches, dans la zone de notification ou prechargee par
+# Windows : dans les trois cas l'utilisateur ne la voyait pas, c'est de
+# l'arriere-plan et elle doit y retourner.
+#
+# MainWindowHandle ne suffit pas ici : il reste non nul pour une fenetre
+# reduite. C'est ce qui faisait revenir EA Desktop en grand.
 function Test-HasWindow {
     param([string]$Name)
-    return (@(Get-TargetProcess $Name | Where-Object { $_.MainWindowHandle -ne 0 }).Count -gt 0)
+
+    try { Initialize-WindowApi } catch { return $false }
+
+    $pids = @(Get-TargetProcess $Name | ForEach-Object { $_.Id })
+    if ($pids.Count -eq 0) { return $false }
+
+    try   { return ([GsoWindow]::FindWindows([int[]]$pids, $true).Count -gt 0) }
+    catch { return $false }
 }
 
 # Certaines applications ignorent le /min du shell et s'ouvrent en grand quand
 # meme -- EA Desktop en particulier, qui restaure sa propre geometrie. On les
 # reduit alors nous-memes, en demandant a Windows de minimiser leur fenetre des
 # qu'elle apparait.
+#
+#  MainWindowHandle ne suffit pas : les applications Electron -- EA Desktop,
+#  Discord -- le laissent a zero alors que leur fenetre est bien affichee,
+#  parce qu'elle appartient a un processus enfant. On enumere donc toutes les
+#  fenetres de premier niveau du systeme et on garde celles dont le processus
+#  proprietaire porte le bon identifiant.
 function Initialize-WindowApi {
     if ('GsoWindow' -as [type]) { return }
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+
 public class GsoWindow {
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    private delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc cb, IntPtr p);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] private static extern int  GetWindowTextLength(IntPtr h);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] public  static extern bool ShowWindow(IntPtr h, int nCmdShow);
+
+    // Fenetres visibles et titrees appartenant a l'un des PID. Sans titre,
+    // c'est une fenetre technique : elle ne compte pas.
+    //
+    // openOnly : ne garder que celles reellement affichees. Une fenetre reduite
+    // reste "visible" pour Windows alors que l'utilisateur ne la voit pas --
+    // c'est de l'arriere-plan, et confondre les deux fait revenir en grand une
+    // application qui etait sagement dans la barre des taches.
+    public static List<IntPtr> FindWindows(int[] pids, bool openOnly) {
+        List<IntPtr> found = new List<IntPtr>();
+        EnumWindows(delegate(IntPtr h, IntPtr p) {
+            if (!IsWindowVisible(h) || GetWindowTextLength(h) == 0) return true;
+            if (openOnly && IsIconic(h)) return true;
+            uint owner;
+            GetWindowThreadProcessId(h, out owner);
+            foreach (int pid in pids) {
+                if (owner == (uint)pid) { found.Add(h); break; }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
 }
 '@
 }
@@ -370,20 +384,38 @@ public class GsoWindow {
 # Sort des que c'est fait, ou au bout du delai si la fenetre n'apparait jamais
 # -- l'application avait peut-etre simplement choisi de rester dans la zone de
 # notification, ce qui est le resultat voulu de toute facon.
+# Reduit les fenetres de $Names, en une seule attente pour tout le monde.
+# Renvoie les noms qui n'ont montre aucune fenetre -- la plupart des
+# applications de fond n'en ouvrent jamais, et c'est tres bien ainsi.
+#
+# Une attente par application couterait le delai complet pour chacune, alors
+# qu'elles demarrent toutes en parallele : d'ou la passe unique.
 function Hide-AppWindow {
-    param([string]$Name, [int]$Seconds = 6)
+    param([string[]]$Names, [double]$Seconds = 6)
 
-    try { Initialize-WindowApi } catch { return }
+    if (-not $Names -or $Names.Count -eq 0) { return @() }
+    try { Initialize-WindowApi } catch { return @() }
 
-    for ($i = 0; $i -lt ($Seconds * 2); $i++) {
-        Start-Sleep -Milliseconds 500
-        foreach ($p in (Get-TargetProcess $Name)) {
-            if ($p.MainWindowHandle -eq 0) { continue }
+    $pending  = @($Names)
+    $deadline = (Get-Date).AddSeconds($Seconds)
+
+    while ((Get-Date) -lt $deadline -and $pending.Count -gt 0) {
+        Start-Sleep -Milliseconds 300
+
+        foreach ($name in @($pending)) {
+            $pids = @(Get-TargetProcess $name | ForEach-Object { $_.Id })
+            if ($pids.Count -eq 0) { continue }
+
+            try   { $windows = [GsoWindow]::FindWindows([int[]]$pids, $false) }
+            catch { continue }
+            if ($windows.Count -eq 0) { continue }
+
             # 6 = SW_MINIMIZE
-            try { $null = [GsoWindow]::ShowWindow($p.MainWindowHandle, 6) } catch { }
-            return
+            foreach ($h in $windows) { $null = [GsoWindow]::ShowWindow($h, 6) }
+            $pending = @($pending | Where-Object { $_ -ne $name })
         }
     }
+    return $pending
 }
 
 # Dernier recours quand le processus refuse de livrer son chemin -- cas d'une
@@ -463,30 +495,16 @@ function Wait-ProcessExit {
     for ($i = 0; $i -lt $Seconds; $i++) {
         if ((Get-TargetProcess $Name).Count -eq 0) { return $true }
         Start-Sleep -Seconds 1
-        Write-Host '.' -NoNewline
     }
     return ((Get-TargetProcess $Name).Count -eq 0)
 }
 
-# Attend la fin de la partie. Un launcher relance parfois le processus du jeu
-# (mise a jour, passage par le menu, changement de mode) : apres sa disparition
-# on observe un delai de grace et on verifie qu'il ne revient pas avant de
-# conclure que la partie est finie.
+# Attend la fin de la partie : le processus du jeu disparaît, on rend la main.
+# Sondage à la seconde.
 function Wait-GameExit {
-    param([string]$Name, [int]$GraceSeconds = 30)
+    param([string]$Name)
 
-    while ($true) {
-        # 2 s : assez espace pour ne rien couter sur une partie de plusieurs
-        # heures, assez court pour que la restauration suive de pres la sortie
-        while ((Get-TargetProcess $Name).Count -gt 0) { Start-Sleep -Seconds 2 }
-
-        $cameBack = $false
-        for ($i = 0; $i -lt $GraceSeconds; $i++) {
-            Start-Sleep -Seconds 1
-            if ((Get-TargetProcess $Name).Count -gt 0) { $cameBack = $true; break }
-        }
-        if (-not $cameBack) { return }
-    }
+    while ((Get-TargetProcess $Name).Count -gt 0) { Start-Sleep -Seconds 1 }
 }
 
 function Wait-ProcessStart {
@@ -495,7 +513,6 @@ function Wait-ProcessStart {
     for ($i = 0; $i -lt $Seconds; $i++) {
         if ((Get-TargetProcess $Name).Count -gt 0) { return $true }
         Start-Sleep -Seconds 1
-        Write-Host '.' -NoNewline
     }
     return ((Get-TargetProcess $Name).Count -gt 0)
 }
@@ -510,11 +527,9 @@ function Stop-AppGracefully {
 
     $path = Get-ProcessPath $procs[0] $Name
 
-    # Meme regle qu'en fermeture forcee : sans chemin, pas de retour possible,
-    # donc on n'y touche pas.
+    # Sans chemin, pas de retour possible : on n'y touche pas.
     if (-not $path) {
-        Write-Line $Name 'chemin illisible, laisse ouvert' 'Yellow'
-        return $null
+        return @{ Path = $null; State = 'Warn'; Detail = 'chemin illisible, laissé ouvert' }
     }
 
     # Aucune fenetre de premier niveau : le WM_CLOSE n'a personne a qui parler,
@@ -522,27 +537,24 @@ function Stop-AppGracefully {
     # applications qui vivent dans la zone de notification (EA Desktop) ou en
     # tache de fond (msedge en prechargement).
     if (@($procs | Where-Object { $_.MainWindowHandle -ne 0 }).Count -eq 0) {
-        Write-Line $Name 'pas de fenetre, fermeture immediate' 'DarkGray'
         foreach ($p in $procs) { try { $p.Kill() } catch { } }
-        return $path
+        return @{ Path = $path; State = 'Ok'; Detail = 'fermé (aucune fenêtre)' }
     }
 
-    Write-Host "    - $Name " -NoNewline
     foreach ($p in $procs) { try { $null = $p.CloseMainWindow() } catch { } }
 
     if (Wait-ProcessExit $Name $Timeout) {
-        Write-Host ' ok' -ForegroundColor Green
-    } else {
-        Write-Host ' ne repond pas, fermeture forcee' -ForegroundColor Yellow
-        foreach ($p in (Get-TargetProcess $Name)) { try { $p.Kill() } catch { } }
+        return @{ Path = $path; State = 'Ok'; Detail = 'fermé' }
     }
-    return $path
+
+    foreach ($p in (Get-TargetProcess $Name)) { try { $p.Kill() } catch { } }
+    return @{ Path = $path; State = 'Warn'; Detail = 'ne répondait pas, fermeture forcée' }
 }
 
 # Aucune fenetre de premier niveau : le WM_CLOSE n'aurait personne a qui parler,
 # attendre ne servirait a rien. Rien a sauvegarder non plus.
 function Stop-AppForced {
-    param([string]$Name, [switch]$Quiet)
+    param([string]$Name)
 
     $procs = Get-TargetProcess $Name
     if ($procs.Count -eq 0) { return $null }
@@ -554,13 +566,11 @@ function Stop-AppForced {
     # jusqu'au prochain redemarrage. Cas typique : un processus lance en
     # administrateur, qui ne livre son chemin ni par .Path ni par WMI.
     if (-not $path) {
-        if (-not $Quiet) { Write-Line $Name 'chemin illisible, laisse ouvert' 'Yellow' }
-        return $null
+        return @{ Path = $null; State = 'Warn'; Detail = 'chemin illisible, laissé ouvert' }
     }
 
-    if (-not $Quiet) { Write-Line $Name '(force)' 'DarkGray' }
     foreach ($p in $procs) { try { $p.Kill() } catch { } }
-    return $path
+    return @{ Path = $path; State = 'Ok'; Detail = 'fermé' }
 }
 
 # ==============================================================================
@@ -696,7 +706,7 @@ function Resolve-GamePath {
     if ($Declared -and $Declared -ne 'auto') {
         if (Test-Path -LiteralPath $Declared) { return $Declared }
         if (-not $Quiet) {
-            Write-Failure "le chemin indique dans config.ini pour $Name n'existe pas :"
+            Write-Failure "le chemin indiqué dans config.ini pour $Name n'existe pas :"
             Write-Hint $Declared
             Write-Hint 'Corrigez la ligne, ou remplacez le chemin par : auto'
         }
@@ -716,7 +726,7 @@ function Resolve-GamePath {
         if (-not $Quiet) {
             Write-Failure "impossible de trouver $Name automatiquement."
             Write-Hint 'Ouvrez config.ini et remplacez  auto  par le chemin complet'
-            Write-Hint "de l executable du jeu, sur la ligne  $Name ="
+        Write-Hint "de l'exécutable du jeu, sur la ligne  $Name ="
         }
         return $null
     }
@@ -752,61 +762,72 @@ function Invoke-Restore {
     $session = (Get-State)['session']
     if (-not $session) {
         Write-Host ''
-        Write-Host 'Rien a restaurer : aucun lancement de jeu enregistre.' -ForegroundColor Yellow
+        Write-Host 'Rien à restaurer : aucun lancement de jeu enregistré.' -ForegroundColor Yellow
         return 0
     }
 
-    Write-Host ''
-    Write-Host 'Redemarrage des services...'
+    Write-Step 'Redémarrage des services...'
     $services = @($session.Services)
-    if ($services.Count -eq 0) { Write-Host '    (aucun)' -ForegroundColor DarkGray }
 
     $started = @(Set-ServiceState -Action Start -Names $services `
                                   -Elevate (Get-IniBool $Ini 'Options' 'ElevateForServices' $true))
 
-    foreach ($name in $services) {
-        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
-        if (-not $svc)                        { Write-Line $name 'service introuvable, ignore' 'Yellow' }
-        elseif ($started -contains $name)     { Write-Line $name 'demarre' 'Green' }
-        elseif ($svc.Status -eq 'Running')    { Write-Line $name 'deja demarre' 'DarkGray' }
-        else                                  { Write-Line $name 'echec (autorisation refusee ?)' 'Yellow' }
+    Start-StatusList $services
+    for ($i = 0; $i -lt $services.Count; $i++) {
+        $name = $services[$i]
+        $svc  = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if (-not $svc)                     { Update-StatusItem $i 'Info' 'service introuvable' }
+        elseif ($started -contains $name)  { Update-StatusItem $i 'Ok'   'démarré' }
+        elseif ($svc.Status -eq 'Running') { Update-StatusItem $i 'Info' 'déjà démarré' }
+        else                               { Update-StatusItem $i 'Fail' 'échec (autorisation refusée ?)' }
     }
+    Complete-StatusList
+    if ($services.Count -eq 0) { Write-Host '    (aucun)' -ForegroundColor DarkGray }
 
-    Write-Host ''
-    Write-Host 'Redemarrage des applications...'
+    Write-Step 'Redémarrage des applications...'
     $apps = @($session.Apps)
-    if ($apps.Count -eq 0) { Write-Host '    (aucune)' -ForegroundColor DarkGray }
 
-    foreach ($app in $apps) {
+    # Celles a remettre en arriere-plan. Toutes traitees en une fois apres la
+    # boucle : les applications demarrent en parallele de toute facon, et une
+    # attente par application couterait le delai autant de fois qu'il y en a.
+    $pending = @()
+
+    Start-StatusList @($apps | ForEach-Object { $_.Process })
+    for ($i = 0; $i -lt $apps.Count; $i++) {
+        $app = $apps[$i]
+
         if ((Get-TargetProcess $app.Process).Count -gt 0) {
-            Write-Line $app.Process 'deja lance' 'DarkGray'
+            Update-StatusItem $i 'Info' 'déjà lancé'
             continue
         }
         if (-not $app.Path -or -not (Test-Path -LiteralPath $app.Path)) {
-            Write-Line $app.Process 'chemin introuvable, ignore' 'Yellow'
+            Update-StatusItem $i 'Warn' 'chemin introuvable'
             continue
         }
         try {
             # Ce qui tournait sans fenetre revient reduit : on remet la machine
             # comme elle etait, pas huit fenetres en travers du bureau.
             if ($app.Background) {
-                # La ligne s'ecrit en deux temps : le nom d'abord, le verdict
-                # une fois la fenetre reellement reduite.
-                Write-Host "    - $($app.Process) " -NoNewline
                 Start-Detached $app.Path (Get-IniValue $Ini 'Arguments' $app.Process) -Minimized
-                Hide-AppWindow $app.Process
-                Write-Host 'demarre (reduit)' -ForegroundColor Green
+                $pending += $app.Process
+                Update-StatusItem $i 'Ok' 'démarré (réduit)'
             } else {
                 Start-Detached $app.Path (Get-IniValue $Ini 'Arguments' $app.Process)
-                Write-Line $app.Process 'demarre' 'Green'
+                Update-StatusItem $i 'Ok' 'démarré'
             }
         } catch {
-            Write-Line $app.Process 'echec au demarrage' 'Yellow'
+            Update-StatusItem $i 'Fail' 'échec au démarrage'
         }
     }
+    Complete-StatusList
+    if ($apps.Count -eq 0) { Write-Host '    (aucune)' -ForegroundColor DarkGray }
+
+    # Une seule attente pour tout le monde. Silencieux : la ligne "demarre
+    # (reduit)" a deja ete affichee pour chacune.
+    $null = Hide-AppWindow $pending 6
 
     Write-Host ''
-    Write-Host 'Termine.' -ForegroundColor Green
+    Write-Host 'Terminé.' -ForegroundColor Green
     return 0
 }
 
@@ -834,7 +855,7 @@ function Invoke-Launch {
     } else {
         $declared = Get-IniValue $Ini 'Games' $Name
         if ($null -eq $declared) {
-            Write-Failure "le jeu `"$Name`" n'est pas declare dans config.ini."
+            Write-Failure "le jeu `"$Name`" n'est pas déclaré dans config.ini."
             Write-Hint "Ajoutez une ligne   $Name = auto   sous [Games]."
             return 2
         }
@@ -885,8 +906,7 @@ function Invoke-Launch {
     }
 
     # ---- 1. Verifications ---------------------------------------------------
-    Write-Host ''
-    Write-Host '[1/6] Verifications...'
+    Write-Step '[1/6] Vérifications...'
 
     # En mode test on les passe toutes : c'est justement ce qu'on veut eprouver.
     # Liste vide = preflight.ps1 execute l'integralite de ce qu'il connait, sans
@@ -902,9 +922,9 @@ function Invoke-Launch {
     $ok = $true
     $preflight = Join-Path $script:ScriptDir 'preflight.ps1'
     if (-not $Test -and $checkList.Count -eq 0) {
-        Write-Host '    (aucune verification configuree)' -ForegroundColor DarkGray
+        Write-Host '    (aucune vérification configurée)' -ForegroundColor DarkGray
     } elseif (-not (Test-Path -LiteralPath $preflight)) {
-        Write-Host '    [  ?  ] verifications ignorees : preflight.ps1 introuvable' -ForegroundColor DarkGray
+        Write-Host '    [  ?  ] vérifications ignorées : preflight.ps1 introuvable' -ForegroundColor DarkGray
     } else {
         . $preflight -AsModule
         $ok = Invoke-Preflight -Checks $checkList
@@ -914,10 +934,10 @@ function Invoke-Launch {
     # qu'au lancement : a ce stade rien n'a ete ferme, annuler ne coute rien.
     if (-not $ok) {
         Write-Host ''
-        $answer = Read-Host '    Verification(s) en echec. Continuer quand meme ? [o/N]'
+        $answer = Read-Host '    Vérification(s) en échec. Continuer quand même ? [o/N]'
         if ($answer -notmatch '^\s*[oyOY]') {
             Write-Host ''
-            Write-Host "Lancement annule. Aucune application n'a ete fermee." -ForegroundColor Yellow
+            Write-Host "Lancement annulé. Aucune application n'a été fermée." -ForegroundColor Yellow
             return 1
         }
     }
@@ -934,8 +954,7 @@ function Invoke-Launch {
     $stoppedServices = @()
 
     # ---- 2. Services --------------------------------------------------------
-    Write-Host ''
-    Write-Host '[2/6] Arret des services...'
+    Write-Step '[2/6] Arrêt des services...'
     $serviceList = @(Get-IniList $Ini 'Services')
     # L'indexation Windows est un gros consommateur d'E/S disque, cause classique
     # de micro-freezes en pleine partie.
@@ -950,73 +969,89 @@ function Invoke-Launch {
     $stoppedServices = @(Set-ServiceState -Action Stop -Names $serviceList `
                                           -Elevate (Get-IniBool $Ini 'Options' 'ElevateForServices' $true))
 
-    if ($running.Count -eq 0) {
-        Write-Host '    (aucun service a arreter)' -ForegroundColor DarkGray
+    Start-StatusList $running
+    for ($i = 0; $i -lt $running.Count; $i++) {
+        if ($stoppedServices -contains $running[$i]) { Update-StatusItem $i 'Ok' 'arrêté' }
+        else { Update-StatusItem $i 'Fail' 'échec (autorisation refusée ?)' }
     }
-    foreach ($name in $running) {
-        if ($stoppedServices -contains $name) { Write-Line $name 'arrete' 'Green' }
-        else { Write-Line $name 'echec (autorisation refusee ?)' 'Yellow' }
-    }
-
+    Complete-StatusList
+    if ($running.Count -eq 0) { Write-Host '    (aucun service à arrêter)' -ForegroundColor DarkGray }
     # ---- 3. Fermeture propre ------------------------------------------------
-    Write-Host ''
-    Write-Host '[3/6] Fermeture propre des applications...'
+    Write-Step '[3/6] Fermeture propre des applications...'
 
     # Les launchers sont une section a part dans config.ini -- leur sort depend
     # du jeu lance -- mais ils se ferment exactement comme les autres.
     $toClose = @(Get-IniList $Ini 'CloseGracefully') + @(Get-IniList $Ini 'Launchers')
 
-    foreach ($app in $toClose) {
+    # Seules celles qui tournent vraiment entrent dans la liste : afficher les
+    # quinze entrees de config.ini quand trois sont lancees noierait le reste.
+    $toClose = @($toClose | Where-Object {
+        (Get-TargetProcess $_).Count -gt 0 -or ($launcher -and $_ -eq $launcher)
+    })
+
+    Start-StatusList $toClose
+    for ($i = 0; $i -lt $toClose.Count; $i++) {
+        $app = $toClose[$i]
+
         if ($launcher -and $app -eq $launcher) {
-            Write-Line $app "conserve (launcher de $title)" 'DarkGray'
+            Update-StatusItem $i 'Info' "conservé — launcher de $title"
             continue
         }
+
         # A evaluer avant de fermer : apres, il n'y a plus de fenetre a observer
         $hadWindow = Test-HasWindow $app
         $skip      = Test-SkipReopen $app
 
-        if ($app -eq 'steam.exe') {
-            if ((Get-TargetProcess 'steam.exe').Count -eq 0) { continue }
-            $path = Stop-Steam
-            if ($path -and -not $skip) { $closedApps += New-ClosedApp $app $path $hadWindow }
-            continue
-        }
-        $path = Stop-AppGracefully $app $closeTimeout
-        if ($path -and -not $skip) { $closedApps += New-ClosedApp $app $path $hadWindow }
+        $r = if ($app -eq 'steam.exe') { Stop-Steam } else { Stop-AppGracefully $app $closeTimeout }
+        if (-not $r) { Update-StatusItem $i 'Info' 'pas en cours'; continue }
+
+        Update-StatusItem $i $r.State $r.Detail
+        if ($r.Path -and -not $skip) { $closedApps += New-ClosedApp $app $r.Path $hadWindow }
     }
+    Complete-StatusList
 
     # ---- 4. Fermeture forcee ------------------------------------------------
-    Write-Host ''
-    Write-Host '[4/6] Fermeture des utilitaires et serveurs...'
-    foreach ($app in (Get-IniList $Ini 'CloseForced')) {
+    Write-Step '[4/6] Fermeture des utilitaires et serveurs...'
+
+    $forced = @(Get-IniList $Ini 'CloseForced' | Where-Object {
+        (Get-TargetProcess $_).Count -gt 0 -or ($launcher -and $_ -eq $launcher)
+    })
+
+    Start-StatusList $forced
+    for ($i = 0; $i -lt $forced.Count; $i++) {
+        $app = $forced[$i]
+
         if ($launcher -and $app -eq $launcher) {
-            Write-Line $app "conserve (launcher de $title)" 'DarkGray'
+            Update-StatusItem $i 'Info' "conservé — launcher de $title"
             continue
         }
+
         $hadWindow = Test-HasWindow $app
         $skip      = Test-SkipReopen $app
-        $path      = Stop-AppForced $app
-        if ($path -and -not $skip) { $closedApps += New-ClosedApp $app $path $hadWindow }
+        $r         = Stop-AppForced $app
+        if (-not $r) { Update-StatusItem $i 'Info' 'pas en cours'; continue }
+
+        Update-StatusItem $i $r.State $r.Detail
+        if ($r.Path -and -not $skip) { $closedApps += New-ClosedApp $app $r.Path $hadWindow }
     }
+    Complete-StatusList
 
     # ---- 5. Taches de fond --------------------------------------------------
-    Write-Host ''
-    Write-Host '[5/6] Mise en pause des taches de fond...'
+    Write-Step '[5/6] Mise en pause des tâches de fond...'
 
     # La Xbox Game Bar enregistre en continu pendant le jeu. Ces processus se
     # relancent seuls a la demande : rien a restaurer, rien a enregistrer.
     if (Get-IniBool $Ini 'Options' 'StopXboxGameBar' $true) {
         foreach ($p in @('GameBar.exe', 'GameBarFTServer.exe', 'GameBarPresenceWriter.exe', 'XboxGameBarWidgets.exe')) {
-            $null = Stop-AppForced $p -Quiet
+            $null = Stop-AppForced $p
         }
-        Write-Line 'Xbox Game Bar' 'arretee' 'Green'
+        Write-Status 'Xbox Game Bar' 'Ok' 'arrêtée'
     }
 
     Save-SessionState $closedApps $stoppedServices
 
     # ---- 6. Lancement -------------------------------------------------------
-    Write-Host ''
-    Write-Host "[6/6] Lancement de $title..."
+    Write-Step "[6/6] Lancement de $title..."
     try {
         # Detache lui aussi : un jeu bavard noierait la console qui doit rester
         # lisible pendant toute la partie.
@@ -1027,9 +1062,11 @@ function Invoke-Launch {
         return 2
     }
 
-    Write-Host '    demarrage ' -NoNewline
+    # Le titre du jeu, pas le mot « démarrage » : la ligne se lit alors comme
+    # toutes les autres, un nom à gauche et son état à droite.
+    Write-StatusStart $title
     if (Wait-ProcessStart $gameProcess $startTimeout) {
-        Write-Host ' ok, bon match !' -ForegroundColor Green
+        Write-StatusEnd 'Ok' 'lancé, bon match !'
 
         # ---- Apres la partie : restauration automatique ---------------------
         # Les 6 etapes numerotees sont celles de la preparation ; ce qui suit
@@ -1038,14 +1075,14 @@ function Invoke-Launch {
 
         Write-Host ''
         Write-Host 'Partie en cours.' -ForegroundColor DarkGray
-        Write-Host 'Cette fenetre se reveillera a la fermeture du jeu pour tout remettre' -ForegroundColor DarkGray
-        Write-Host 'en place. La fermer maintenant n annule rien : le raccourci' -ForegroundColor DarkGray
-        Write-Host '"Tout rouvrir" fait exactement la meme chose, a la demande.' -ForegroundColor DarkGray
+        Write-Host 'Cette fenêtre se réveillera à la fermeture du jeu pour tout remettre' -ForegroundColor DarkGray
+        Write-Host 'en place. La fermer maintenant n''annule rien : le raccourci' -ForegroundColor DarkGray
+        Write-Host '"Tout rouvrir" fait exactement la même chose, à la demande.' -ForegroundColor DarkGray
 
-        Wait-GameExit $gameProcess (Get-IniInt $Ini 'Options' 'AutoRestoreDelay' 10)
+        Wait-GameExit $gameProcess
 
         Write-Host ''
-        Write-Host "$title s'est ferme, restauration..." -ForegroundColor Green
+        Write-Host "$title s'est fermé, restauration..." -ForegroundColor Green
         return (Invoke-Restore $Ini)
     }
 
@@ -1053,9 +1090,9 @@ function Invoke-Launch {
     Write-Host ''
     # Le nom du processus reste en indice : c'est lui qu'on a guette, et le
     # savoir aide a comprendre pourquoi rien n'a ete vu.
-    Write-Host "ATTENTION : $title n'a pas demarre apres $startTimeout s." -ForegroundColor Yellow
+    Write-Host "ATTENTION : $title n'a pas démarré après $startTimeout s." -ForegroundColor Yellow
     Write-Hint "(processus attendu : $gameProcess)"
-    Write-Hint 'Le launcher a peut-etre besoin d une connexion ou d une mise a jour.'
+    Write-Hint 'Le launcher a peut-être besoin d''une connexion ou d''une mise à jour.'
     return 2
 }
 
@@ -1074,11 +1111,11 @@ try {
         if (Test-Path -LiteralPath $script:ConfigTemplate) {
             Copy-Item -LiteralPath $script:ConfigTemplate -Destination $Config
             Write-Host ''
-            Write-Host "    ($(Split-Path -Leaf $Config) cree a partir de $(Split-Path -Leaf $script:ConfigTemplate))" -ForegroundColor DarkGray
+            Write-Host "    ($(Split-Path -Leaf $Config) créé à partir de $(Split-Path -Leaf $script:ConfigTemplate))" -ForegroundColor DarkGray
         } else {
-            Write-Failure 'config.ini introuvable, et aucun modele pour le creer :'
+            Write-Failure 'config.ini introuvable, et aucun modèle pour le créer :'
             Write-Hint $Config
-            Wait-KeyPress
+            Wait-AnyKey
             exit 2
         }
     }
@@ -1091,7 +1128,7 @@ try {
     } elseif ($Game) {
         $exitCode = Invoke-Launch $ini $Game
     } else {
-        Write-Failure 'aucun jeu indique. Utilisez un raccourci "Lancer ..." du Bureau.'
+        Write-Failure 'aucun jeu indiqué. Utilisez un raccourci "Lancer ..." du Bureau.'
         $exitCode = 2
     }
 } catch {
@@ -1099,14 +1136,14 @@ try {
     $exitCode = 2
 }
 
-# La fenetre attend une touche : on doit pouvoir lire ce qui s'est passe,
-# surtout apres la restauration qui arrive des heures plus tard.
+# Quand tout s'est bien passe, la fenetre disparait : on vient de jouer, on n'a
+# rien a lire. Elle attend une touche dans trois cas seulement :
 #
-# KeepWindowOpen = false la referme seule -- utile avec AutoRestore = false, ou
-# il n'y a plus rien a lire une fois le jeu lance. Une erreur fait toujours
-# attendre : un message que personne ne lit ne sert a rien.
-$keepOpen = $true
-if ($ini) { $keepOpen = Get-IniBool $ini 'Options' 'KeepWindowOpen' $true }
+#   - une erreur, sinon le message defilerait sans que personne le voie ;
+#   - le mode test, dont le resultat est justement ce qu'on est venu regarder ;
+#   - KeepWindowOpen = true, pour qui veut relire le detail a chaque fois.
+$keepOpen = $false
+if ($ini) { $keepOpen = Get-IniBool $ini 'Options' 'KeepWindowOpen' $false }
 
-if ($exitCode -eq 2 -or $keepOpen) { Wait-KeyPress }
+if ($exitCode -eq 2 -or $Test -or $keepOpen) { Wait-AnyKey }
 exit $exitCode
