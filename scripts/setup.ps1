@@ -22,15 +22,30 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$engine      = Join-Path $script:Root 'session.ps1'
+# Les scripts vivent dans scripts\, la configuration a la racine du dossier.
+$script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:Root      = Split-Path -Parent $script:ScriptDir
+
+# Jumelle de Wait-KeyPress dans session.ps1, redefinie ici parce que les
+# premieres erreurs surviennent avant d'avoir pu charger le moteur.
+function Wait-AnyKey {
+    Write-Host ''
+    Write-Host 'Appuyez sur une touche pour fermer...' -ForegroundColor DarkGray
+
+    # Vider le tampon : sans ca, une frappe restee en file ferait passer
+    # ReadKey sans attendre et la fenetre se refermerait seule.
+    try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
+    try   { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') }
+    catch { Start-Sleep -Seconds 5 }
+}
+
+$engine = Join-Path $script:ScriptDir 'session.ps1'
 
 if (-not (Test-Path -LiteralPath $engine)) {
     Write-Host ''
-    Write-Host "ERREUR : session.ps1 est introuvable a cote de setup.ps1." -ForegroundColor Red
+    Write-Host 'ERREUR : session.ps1 est introuvable dans le dossier scripts.' -ForegroundColor Red
     Write-Host '         Les fichiers doivent rester ensemble dans le meme dossier.' -ForegroundColor DarkGray
-    Write-Host ''
-    $null = Read-Host 'Appuyez sur Entree pour fermer'
+    Wait-AnyKey
     exit 2
 }
 
@@ -46,12 +61,11 @@ if (-not (Test-Path -LiteralPath $Config)) {
     if (-not (Test-Path -LiteralPath $template)) {
         Write-Host ''
         Write-Host 'ERREUR : ni config.ini ni config.exemple.ini dans ce dossier.' -ForegroundColor Red
-        Write-Host ''
-        $null = Read-Host 'Appuyez sur Entree pour fermer'
+        Wait-AnyKey
         exit 2
     }
     Copy-Item -LiteralPath $template -Destination $Config
-    Write-Host "    (config.ini cree a partir de config.exemple.ini)" -ForegroundColor DarkGray
+    $configCreated = $true
 }
 
 $ini   = Read-IniFile $Config
@@ -78,8 +92,7 @@ if (-not (Test-Path -LiteralPath $target)) {
         Write-Host "ERREUR : impossible de creer le dossier des raccourcis :" -ForegroundColor Red
         Write-Host "         $target" -ForegroundColor DarkGray
         Write-Host '         Corrigez ShortcutFolder dans config.ini.' -ForegroundColor DarkGray
-        Write-Host ''
-        $null = Read-Host 'Appuyez sur Entree pour fermer'
+        Wait-AnyKey
         exit 2
     }
 }
@@ -148,6 +161,13 @@ function Remove-OwnShortcuts {
 }
 
 # ------------------------------------------------------------------------------
+
+if ($configCreated) {
+    Write-Host ''
+    Write-Host 'Premiere utilisation : config.ini vient d etre cree a partir du modele.' -ForegroundColor Cyan
+    Write-Host 'Les raccourcis ci-dessous correspondent aux jeux qu il contient. Pour en' -ForegroundColor DarkGray
+    Write-Host 'ajouter, ouvrez config.ini avec le Bloc-notes puis relancez setup.bat.' -ForegroundColor DarkGray
+}
 
 Write-Host ''
 Write-Host 'Creation des raccourcis dans :'
@@ -228,5 +248,5 @@ if ($skipped.Count -gt 0) {
 Write-Host ''
 Write-Host 'Relancez setup quand vous ajoutez un jeu dans config.ini.' -ForegroundColor DarkGray
 Write-Host ''
-$null = Read-Host 'Appuyez sur Entree pour fermer'
+Wait-AnyKey
 exit 0

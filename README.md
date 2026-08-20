@@ -53,14 +53,27 @@ retoucherez plus.
 
 ## Installation
 
-> Double-cliquez sur **`setup.bat`**
+**1. Double-cliquez sur `setup.bat`.**
 
-Il crée sur votre Bureau un raccourci par jeu — **Lancer Battlefield 6**,
-**Lancer Call of Duty 4 - Modern Warfare**… — chacun avec l'icône du jeu, plus
-un raccourci **Tout rouvrir**.
+Au premier lancement, il crée votre `config.ini` à partir du modèle fourni, puis
+place sur le Bureau un raccourci par jeu qu'il a su trouver — **Lancer
+Battlefield 6**, par exemple, avec l'icône du jeu — plus un raccourci
+**Tout rouvrir**.
 
-C'est aussi ce qu'il faut relancer après avoir ajouté un jeu dans `config.ini` :
-les raccourcis sont simplement refaits.
+**2. Ouvrez `config.ini` avec le Bloc-notes.**
+
+C'est là que vous déclarez vos jeux, et que vous ajustez la liste des
+applications à fermer si le modèle ne vous convient pas. Chaque section y est
+commentée.
+
+**3. Relancez `setup.bat`.**
+
+Les raccourcis sont refaits d'après votre configuration : ceux des jeux ajoutés
+apparaissent, ceux des jeux retirés disparaissent.
+
+> Cette troisième étape est à refaire **chaque fois** que vous touchez à la
+> section `[Games]`. Les autres réglages — applications à fermer, options,
+> vérifications — sont relus à chaque partie et ne demandent aucune relance.
 
 Pour les ranger ailleurs que sur le Bureau, renseignez `ShortcutFolder` dans
 `[Options]` — les variables d'environnement sont acceptées, et un chemin
@@ -211,8 +224,22 @@ partie finie. Augmentez `AutoRestoreDelay` : c'est le temps qu'il observe après
 la disparition du jeu avant de conclure.
 
 **Je préfère décider moi-même quand tout se rouvre**
-Passez `AutoRestore` à `false`. La fenêtre se fermera aussitôt le jeu lancé, et
-le raccourci **Tout rouvrir** restera là pour la restauration.
+Passez `AutoRestore` à `false`. Le script s'arrête dès le jeu lancé, et le
+raccourci **Tout rouvrir** reste là pour la restauration, quand ça vous arrange.
+
+Dans ce cas, ajoutez aussi `KeepWindowOpen = false` : sans ça la fenêtre noire
+attend une touche avant de disparaître, ce qui n'a plus d'intérêt puisqu'il n'y
+a plus rien à lire.
+
+```ini
+[Options]
+AutoRestore = false
+KeepWindowOpen = false
+```
+
+Vous n'avez alors plus rien à l'écran pendant la partie, et plus aucun processus
+de l'outil en mémoire. En cas d'erreur, la fenêtre attend malgré tout : un
+message que personne ne lit ne sert à rien.
 
 **J'ai déplacé le dossier et les raccourcis ne marchent plus**
 Ils pointent vers l'ancien emplacement. Relancez `setup.bat` depuis le nouveau.
@@ -225,13 +252,12 @@ Sa plateforme a probablement été fermée juste avant le lancement. Ajoutez
 
 | Fichier | Rôle |
 |---|---|
-| `setup.bat` | crée les raccourcis du Bureau — à relancer après un ajout de jeu |
-| `config.ini` | votre configuration — créée au premier lancement |
-| `config.exemple.ini` | le modèle d'origine |
-| `session.ps1` | le moteur — aucune raison de l'ouvrir |
-| `setup.ps1` | ce que `setup.bat` exécute |
-| `preflight.ps1` | les vérifications matérielles |
+| `setup.bat` | **à double-cliquer** — crée les raccourcis, à relancer après un ajout de jeu |
+| `config.ini` | **votre configuration** — créée au premier lancement |
+| `config.exemple.ini` | le modèle d'origine, pour comparer ou repartir de zéro |
+| `README.md` | ce fichier |
 | `state.json` | ce que l'outil retient d'une partie à l'autre |
+| `scripts\` | la mécanique — rien à y faire |
 
 Ces fichiers doivent rester ensemble dans le même dossier, où que vous le
 placiez. `state.json` contient ce qui a été fermé et l'emplacement des jeux

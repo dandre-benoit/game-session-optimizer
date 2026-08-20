@@ -7,15 +7,25 @@ inconnue sans rien installer.
 
 ## Architecture
 
+La racine ne contient que ce que l'utilisateur doit voir ; toute la mécanique
+est dans `scripts/`.
+
 | Fichier | Rôle |
 |---|---|
-| `setup.bat` | seul `.bat` du projet, double-cliquable : lance `setup.ps1` |
-| `setup.ps1` | crée les raccourcis du Bureau, un par jeu de `[Games]` plus « Tout rouvrir ». Idempotent : relancer est la façon normale de prendre en compte un ajout de jeu |
-| `session.ps1` | le moteur : il porte la session de jeu entière, de la préparation à la remise en état |
-| `preflight.ps1` | vérifications matérielles, chargées par le moteur via `. preflight.ps1 -AsModule` puis `Invoke-Preflight -Checks` |
+| `setup.bat` | seul fichier exécutable à la racine, double-cliquable : lance `scripts\setup.ps1` |
 | `config.ini` | la configuration lue par le moteur, **jamais versionnée** |
 | `config.exemple.ini` | le modèle livré, dont `config.ini` est créé au premier lancement |
 | `README.md` | documentation utilisateur (destinée à des amis non techniciens) |
+| `state.json` | état entre deux parties, **jamais versionné** |
+| `scripts/setup.ps1` | crée les raccourcis, un par jeu de `[Games]` plus « Tout rouvrir ». Idempotent : relancer est la façon normale de prendre en compte un ajout de jeu |
+| `scripts/session.ps1` | le moteur : il porte la session de jeu entière, de la préparation à la remise en état |
+| `scripts/preflight.ps1` | vérifications matérielles, chargées par le moteur via `. preflight.ps1 -AsModule` puis `Invoke-Preflight -Checks` |
+| `scripts/fake-game.bat` | faux jeu du mode test (`-Test`), une fenêtre qui attend une touche |
+
+Les scripts distinguent deux dossiers : `$script:ScriptDir` (où ils sont) et
+`$script:Root` (la racine, son parent). `config.ini`, `config.exemple.ini` et
+`state.json` sont à la racine ; `preflight.ps1` et `fake-game.bat` à côté des
+scripts. Confondre les deux casse tout silencieusement.
 
 Cible : **PowerShell 5.1**, présent d'origine sur Windows 10/11. Aucune
 dépendance externe, aucune installation. `setup.bat` et les raccourcis du

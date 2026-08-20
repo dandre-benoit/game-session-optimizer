@@ -27,7 +27,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Les scripts vivent dans scripts\, la configuration et l'etat a la racine du
+# dossier : l'utilisateur n'a sous les yeux que ce qui le concerne.
+$script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:Root      = Split-Path -Parent $script:ScriptDir
+
 if (-not $Config) { $Config = Join-Path $script:Root 'config.ini' }
 
 # config.ini est le fichier de l'utilisateur et n'est pas versionne : au premier
@@ -68,6 +72,12 @@ function Write-Hint {
 function Wait-KeyPress {
     Write-Host ''
     Write-Host 'Appuyez sur une touche pour fermer...' -ForegroundColor DarkGray
+
+    # Vider le tampon d'abord : pendant la partie, la console a pu recevoir des
+    # frappes. Sans ce vidage, ReadKey trouverait une touche deja en attente et
+    # rendrait la main aussitot -- la fenetre se refermerait toute seule.
+    try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
+
     # ReadKey n'existe pas hors console interactive : dans ce cas on ne bloque pas
     try   { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') }
     catch { Start-Sleep -Seconds 5 }
@@ -313,14 +323,67 @@ function Stop-Steam {
 # restauration. "cmd /c start" les detache, exactement comme le ferait un
 # double-clic depuis l'Explorateur : elles n'ont plus de console ou ecrire.
 function Start-Detached {
-    param([string]$Path, [string]$Arguments)
+    param([string]$Path, [string]$Arguments, [switch]$Minimized)
 
     # Le "" apres start est le titre de fenetre, obligatoire des que le chemin
     # est entre guillemets -- sinon cmd prend le chemin pour un titre.
-    $cmdArgs = @('/c', 'start', '""', "`"$Path`"")
+    $cmdArgs = @('/c', 'start', '""')
+
+    # /min pour ce qui tournait sans fenetre : l'application revient discrete,
+    # comme elle etait. Certaines l'ignorent et s'ouvrent quand meme -- c'est
+    # une indication donnee au shell, pas une garantie.
+    if ($Minimized) { $cmdArgs += '/min' }
+
+    $cmdArgs += "`"$Path`""
     if ($Arguments) { $cmdArgs += $Arguments }
 
     Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdArgs -WindowStyle Hidden
+}
+
+# Une application sans fenetre de premier niveau tourne en arriere-plan : soit
+# reduite dans la zone de notification, soit prechargee par Windows.
+function Test-HasWindow {
+    param([string]$Name)
+    return (@(Get-TargetProcess $Name | Where-Object { $_.MainWindowHandle -ne 0 }).Count -gt 0)
+}
+
+# Certaines applications ignorent le /min du shell et s'ouvrent en grand quand
+# meme -- EA Desktop en particulier, qui restaure sa propre geometrie. On les
+# reduit alors nous-memes, en demandant a Windows de minimiser leur fenetre des
+# qu'elle apparait.
+function Initialize-WindowApi {
+    if ('GsoWindow' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class GsoWindow {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+'@
+}
+
+# Attend que l'application ouvre sa fenetre, puis la reduit. Appelee juste
+# apres l'avoir relancee : chacune est traitee pendant qu'on s'occupe d'elle,
+# et la ligne affichee decrit alors un travail termine.
+#
+# Sort des que c'est fait, ou au bout du delai si la fenetre n'apparait jamais
+# -- l'application avait peut-etre simplement choisi de rester dans la zone de
+# notification, ce qui est le resultat voulu de toute facon.
+function Hide-AppWindow {
+    param([string]$Name, [int]$Seconds = 6)
+
+    try { Initialize-WindowApi } catch { return }
+
+    for ($i = 0; $i -lt ($Seconds * 2); $i++) {
+        Start-Sleep -Milliseconds 500
+        foreach ($p in (Get-TargetProcess $Name)) {
+            if ($p.MainWindowHandle -eq 0) { continue }
+            # 6 = SW_MINIMIZE
+            try { $null = [GsoWindow]::ShowWindow($p.MainWindowHandle, 6) } catch { }
+            return
+        }
+    }
 }
 
 # Dernier recours quand le processus refuse de livrer son chemin -- cas d'une
@@ -452,6 +515,16 @@ function Stop-AppGracefully {
     if (-not $path) {
         Write-Line $Name 'chemin illisible, laisse ouvert' 'Yellow'
         return $null
+    }
+
+    # Aucune fenetre de premier niveau : le WM_CLOSE n'a personne a qui parler,
+    # attendre le delai complet ne ferait que le perdre. Cas courant des
+    # applications qui vivent dans la zone de notification (EA Desktop) ou en
+    # tache de fond (msedge en prechargement).
+    if (@($procs | Where-Object { $_.MainWindowHandle -ne 0 }).Count -eq 0) {
+        Write-Line $Name 'pas de fenetre, fermeture immediate' 'DarkGray'
+        foreach ($p in $procs) { try { $p.Kill() } catch { } }
+        return $path
     }
 
     Write-Host "    - $Name " -NoNewline
@@ -703,6 +776,7 @@ function Invoke-Restore {
     Write-Host 'Redemarrage des applications...'
     $apps = @($session.Apps)
     if ($apps.Count -eq 0) { Write-Host '    (aucune)' -ForegroundColor DarkGray }
+
     foreach ($app in $apps) {
         if ((Get-TargetProcess $app.Process).Count -gt 0) {
             Write-Line $app.Process 'deja lance' 'DarkGray'
@@ -713,8 +787,19 @@ function Invoke-Restore {
             continue
         }
         try {
-            Start-Detached $app.Path (Get-IniValue $Ini 'Arguments' $app.Process)
-            Write-Line $app.Process 'demarre' 'Green'
+            # Ce qui tournait sans fenetre revient reduit : on remet la machine
+            # comme elle etait, pas huit fenetres en travers du bureau.
+            if ($app.Background) {
+                # La ligne s'ecrit en deux temps : le nom d'abord, le verdict
+                # une fois la fenetre reellement reduite.
+                Write-Host "    - $($app.Process) " -NoNewline
+                Start-Detached $app.Path (Get-IniValue $Ini 'Arguments' $app.Process) -Minimized
+                Hide-AppWindow $app.Process
+                Write-Host 'demarre (reduit)' -ForegroundColor Green
+            } else {
+                Start-Detached $app.Path (Get-IniValue $Ini 'Arguments' $app.Process)
+                Write-Line $app.Process 'demarre' 'Green'
+            }
         } catch {
             Write-Line $app.Process 'echec au demarrage' 'Yellow'
         }
@@ -736,7 +821,7 @@ function Invoke-Launch {
         # Le cycle complet, mais avec un faux jeu : tout est reellement ferme
         # et restaure, seul le jeu est remplace par une fenetre qui attend.
         # Rien a declarer dans [Games], c'est un mode a part.
-        $exe = Join-Path $script:Root 'fake-game.bat'
+        $exe = Join-Path $script:ScriptDir 'fake-game.bat'
         if (-not (Test-Path -LiteralPath $exe)) {
             Write-Failure 'fake-game.bat est introuvable a cote de session.ps1.'
             return 2
@@ -772,17 +857,51 @@ function Invoke-Launch {
     $closeTimeout = Get-IniInt $Ini 'Options' 'CloseTimeout' 8
     $startTimeout = Get-IniInt $Ini 'Options' 'StartTimeout' 30
 
+    # Applications a ne pas relancer QUAND elles tournaient en arriere-plan,
+    # c'est-a-dire sans fenetre. Avec une fenetre ouverte, elles sont rouvertes
+    # normalement : l'utilisateur s'en servait vraiment.
+    $noReopen = @(Get-IniList $Ini 'NoReopen')
+
+    # Vrai si l'application doit etre oubliee : declaree dans [NoReopen] et sans
+    # fenetre au moment ou on la ferme. A appeler AVANT de la fermer.
+    function Test-SkipReopen {
+        param([string]$App)
+
+        if ($noReopen -notcontains $App) { return $false }
+        return (-not (Test-HasWindow $App))
+    }
+
+    # Retient aussi comment l'application tournait, pour la remettre pareil :
+    # une application reduite dans la zone de notification doit y revenir, pas
+    # s'ouvrir en grand au milieu du bureau.
+    function New-ClosedApp {
+        param([string]$App, [string]$Path, [bool]$HadWindow)
+
+        return [pscustomobject]@{
+            Process    = $App
+            Path       = $Path
+            Background = (-not $HadWindow)
+        }
+    }
+
     # ---- 1. Verifications ---------------------------------------------------
     Write-Host ''
     Write-Host '[1/6] Verifications...'
 
-    $checks = Get-IniValue $Ini "Game.$Name" 'Checks'
-    if ($null -eq $checks) { $checks = Get-IniValue $Ini 'Options' 'Checks' '' }
-    $checkList = @($checks -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    # En mode test on les passe toutes : c'est justement ce qu'on veut eprouver.
+    # Liste vide = preflight.ps1 execute l'integralite de ce qu'il connait, sans
+    # avoir a en tenir un double ici.
+    if ($Test) {
+        $checkList = @()
+    } else {
+        $checks = Get-IniValue $Ini "Game.$Name" 'Checks'
+        if ($null -eq $checks) { $checks = Get-IniValue $Ini 'Options' 'Checks' '' }
+        $checkList = @($checks -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
 
     $ok = $true
-    $preflight = Join-Path $script:Root 'preflight.ps1'
-    if ($checkList.Count -eq 0) {
+    $preflight = Join-Path $script:ScriptDir 'preflight.ps1'
+    if (-not $Test -and $checkList.Count -eq 0) {
         Write-Host '    (aucune verification configuree)' -ForegroundColor DarkGray
     } elseif (-not (Test-Path -LiteralPath $preflight)) {
         Write-Host '    [  ?  ] verifications ignorees : preflight.ps1 introuvable' -ForegroundColor DarkGray
@@ -852,14 +971,18 @@ function Invoke-Launch {
             Write-Line $app "conserve (launcher de $title)" 'DarkGray'
             continue
         }
+        # A evaluer avant de fermer : apres, il n'y a plus de fenetre a observer
+        $hadWindow = Test-HasWindow $app
+        $skip      = Test-SkipReopen $app
+
         if ($app -eq 'steam.exe') {
             if ((Get-TargetProcess 'steam.exe').Count -eq 0) { continue }
             $path = Stop-Steam
-            if ($path) { $closedApps += [pscustomobject]@{ Process = $app; Path = $path } }
+            if ($path -and -not $skip) { $closedApps += New-ClosedApp $app $path $hadWindow }
             continue
         }
         $path = Stop-AppGracefully $app $closeTimeout
-        if ($path) { $closedApps += [pscustomobject]@{ Process = $app; Path = $path } }
+        if ($path -and -not $skip) { $closedApps += New-ClosedApp $app $path $hadWindow }
     }
 
     # ---- 4. Fermeture forcee ------------------------------------------------
@@ -870,8 +993,10 @@ function Invoke-Launch {
             Write-Line $app "conserve (launcher de $title)" 'DarkGray'
             continue
         }
-        $path = Stop-AppForced $app
-        if ($path) { $closedApps += [pscustomobject]@{ Process = $app; Path = $path } }
+        $hadWindow = Test-HasWindow $app
+        $skip      = Test-SkipReopen $app
+        $path      = Stop-AppForced $app
+        if ($path -and -not $skip) { $closedApps += New-ClosedApp $app $path $hadWindow }
     }
 
     # ---- 5. Taches de fond --------------------------------------------------
@@ -920,13 +1045,16 @@ function Invoke-Launch {
         Wait-GameExit $gameProcess (Get-IniInt $Ini 'Options' 'AutoRestoreDelay' 10)
 
         Write-Host ''
-        Write-Host "$gameProcess s'est ferme, restauration..." -ForegroundColor Green
+        Write-Host "$title s'est ferme, restauration..." -ForegroundColor Green
         return (Invoke-Restore $Ini)
     }
 
     Write-Host ''
     Write-Host ''
-    Write-Host "ATTENTION : $gameProcess n'est pas apparu apres $startTimeout s." -ForegroundColor Yellow
+    # Le nom du processus reste en indice : c'est lui qu'on a guette, et le
+    # savoir aide a comprendre pourquoi rien n'a ete vu.
+    Write-Host "ATTENTION : $title n'a pas demarre apres $startTimeout s." -ForegroundColor Yellow
+    Write-Hint "(processus attendu : $gameProcess)"
     Write-Hint 'Le launcher a peut-etre besoin d une connexion ou d une mise a jour.'
     return 2
 }
@@ -971,7 +1099,14 @@ try {
     $exitCode = 2
 }
 
-# La fenetre ne se referme jamais toute seule : on doit pouvoir lire ce qui
-# s'est passe, surtout apres la restauration qui arrive des heures plus tard.
-Wait-KeyPress
+# La fenetre attend une touche : on doit pouvoir lire ce qui s'est passe,
+# surtout apres la restauration qui arrive des heures plus tard.
+#
+# KeepWindowOpen = false la referme seule -- utile avec AutoRestore = false, ou
+# il n'y a plus rien a lire une fois le jeu lance. Une erreur fait toujours
+# attendre : un message que personne ne lit ne sert a rien.
+$keepOpen = $true
+if ($ini) { $keepOpen = Get-IniBool $ini 'Options' 'KeepWindowOpen' $true }
+
+if ($exitCode -eq 2 -or $keepOpen) { Wait-KeyPress }
 exit $exitCode

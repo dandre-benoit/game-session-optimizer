@@ -14,14 +14,14 @@
 
 title Game Session Optimizer - installation
 
-if not exist "%~dp0setup.ps1" goto :Manquant
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1"
+if not exist "%~dp0scripts\setup.ps1" goto :Manquant
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup.ps1"
 exit /b %errorlevel%
 
 :Manquant
 echo.
-echo ERREUR : setup.ps1 est introuvable a cote de ce fichier.
-echo          Les fichiers doivent rester ensemble dans le meme dossier.
+echo ERREUR : scripts\setup.ps1 est introuvable.
+echo          Le dossier scripts doit rester a cote de ce fichier.
 echo.
 pause
 exit /b 2

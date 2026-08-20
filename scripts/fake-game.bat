@@ -22,4 +22,4 @@ echo   fin de la partie et tout remettre en place.
 echo.
 
 pause >nul
-exit /b 0
+exit
